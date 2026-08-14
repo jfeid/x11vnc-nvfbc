@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
 	int cell = 32, i;
 	const char *title = "loadgen";
 	long solid = -1;		/* -solid RRGGBB: hold one colour, for pixel checks */
+	int pipe_mode = 0;		/* -pipe: flip on demand, for latency probing */
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-g") && i + 1 < argc) {
@@ -51,6 +52,7 @@ int main(int argc, char **argv) {
 		} else if (!strcmp(argv[i], "-f") && i + 1 < argc) { frac = atof(argv[++i]);
 		} else if (!strcmp(argv[i], "-t") && i + 1 < argc) { title = argv[++i];
 		} else if (!strcmp(argv[i], "-solid") && i + 1 < argc) { solid = strtol(argv[++i], NULL, 16);
+		} else if (!strcmp(argv[i], "-pipe")) { pipe_mode = 1;
 		} else usage(argv[0]);
 	}
 	if (cell < 1) cell = 1;
@@ -81,6 +83,31 @@ int main(int argc, char **argv) {
 	double t0 = now_s(), next = t0;
 	long frames = 0;
 	double period = (rate > 0.0) ? 1.0 / rate : 0.0;
+
+	if (pipe_mode) {
+		/*
+		 * One colour per line on stdin; fill, XSync so the server has
+		 * really processed it, then print the CLOCK_MONOTONIC time of
+		 * that moment.  A latency probe correlates those stamps with
+		 * when the change reaches a VNC client.  XSync (not XFlush) is
+		 * the point: it makes the printed stamp mean "the X server has
+		 * this", not "the request has been written to a socket".
+		 */
+		char line[64];
+		printf("ready\n");
+		fflush(stdout);
+		while (fgets(line, sizeof line, stdin)) {
+			unsigned long c = strtoul(line, NULL, 16);
+			XSetForeground(dpy, gc, c);
+			XFillRectangle(dpy, win, gc, 0, 0, w, h);
+			XSync(dpy, False);
+			printf("%.6f\n", now_s());
+			fflush(stdout);
+		}
+		XDestroyWindow(dpy, win);
+		XCloseDisplay(dpy);
+		return 0;
+	}
 
 	if (solid >= 0) {
 		/* Known colour at a known position, so a VNC client can fetch the
