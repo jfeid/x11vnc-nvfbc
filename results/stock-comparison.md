@@ -66,25 +66,44 @@ therefore the `-noshm` row. That is the configuration the fork is justified
 against, and it is why commit `897cb8e` disables shm when NVFBC is active.
 
 **Reaching the `+shm` rows.** Nothing about being root prevents MIT-SHM. The
-blocker is that hardcoded 0600, which assumes the client and the X server are
-the same user, so it would fail for any user mismatch in either direction.
-Two ways out:
+blocker was that hardcoded 0600, which assumes the client and the X server are
+the same user, so it failed for any user mismatch in either direction.
 
-1. *Fix the segment mode.* Keep the single root service and grant the X server
-   access — preferably by `shmctl(IPC_SET)`ing `shm_perm.uid` to the owner of
-   `/tmp/.X11-unix/X<n>` (uid 1000 here) rather than widening the mode to 0666,
-   since the segment holds the framebuffer and 0666 would let any local user
-   read the screen. Smallest change, and it covers `:0` and `:1` alike.
-   **Untested:** the 0600 constant and the BadAccess above are verified, but
-   that changing the mode fixes it is inference, not measurement.
-2. *Run x11vnc as the session user.* Covers only the logged-in phase — the
-   greeter on `:0` reads `/run/user/110/gdm/Xauthority`, uid 110 mode 0600, so
-   that phase still needs root. Implies a wrapper that drops privileges and,
-   potentially, a different capture path depending on login state.
+**Fixed** in `f3f28ad`: the segment is handed to the X server's uid via
+`shmctl(IPC_SET)` rather than widening the mode to 0666, which would expose the
+framebuffer to every local user. Confirmed as root against a uid-1000 Xorg —
+`MIT-SHM: handing segments to X server uid 1000`, no BadAccess, server stays
+up. Running x11vnc as the session user is therefore no longer required to reach
+the shm path (and would not have covered the greeter on `:0` anyway, which is
+uid 110 and still needs root).
 
-Under either, stock x11vnc would use less CPU than the fork — at a lower frame
-rate. That trade is worth a deliberate decision rather than an assumption; see
-`x11vnc-deployment-setup` notes for why root was chosen.
+## As root, with the fix: shm vs NVFBC
+
+Same binary both ways, `-nonvfbc` vs `-nvfbc`, 2026-08-14.
+
+| load | path | CPU | updates/s | ms/frame |
+|---|---|---|---|---|
+| medium 960x540 | shm | 30% | 22.8 | 13.2 |
+| | NVFBC | 50% | **41.2** | **12.1** |
+| full 2560x1440 | shm | 40% | 23.1 | **17.3** |
+| | NVFBC | 80% | **26.4** | 30.3 |
+
+At fullscreen the picture is clear and matches the session-user measurements:
+NVFBC buys 14% more frames for double the CPU, so shm is much better value.
+
+**The medium row is unresolved.** As root, shm delivered 22.8 updates/s; as the
+session user the same binary delivered 32.1, 32.6 and 33.6 across three runs,
+all at the same 30% CPU. Full-screen shows no such gap (23.1 root vs 23.8
+user), which is the opposite of what a general read-path slowdown would do.
+x11vnc's own startup probe did report `fb read rate: 701 MB/sec` as root
+against `1272 MB/sec` as the user, with otherwise byte-identical startup logs —
+but that is a single timed sample, and it cannot be reconciled with fullscreen
+being unaffected. Treat it as a lead, not a mechanism.
+
+This matters because it decides the medium case: at 22.8 NVFBC wins on both
+counts, while at ~32 shm would win on efficiency (9.4 vs 12.1 ms/frame). One
+root sample against three user samples is not enough. **Repeat the root run
+before acting on the medium row.**
 
 **The rework itself is unambiguous:** it beats the pre-rework NVFBC build on
 every load, on both frame rate and CPU per frame (5.7 vs 11.7, 11.6 vs 18.4,

@@ -27,14 +27,18 @@ cpu(){ awk '{r=substr($0,index($0,") ")+2);split(r,f," ");print f[12]+f[13]}' "/
 
 port=5911
 run(){
-    local spec="$1" log="/tmp/ab-$port.log" nvargs=()
+    # uid in the path: /tmp is sticky, so a root run would otherwise leave
+    # logs the session user cannot replace, and every later run fails to start
+    local spec="$1" log="/tmp/ab-$(id -u)-$port.log" nvargs=()
     # shellcheck disable=SC2206
     local words=($spec) bin extra
     bin="${words[0]}"; extra=("${words[@]:1}")
     rm -f "$log"
 
-    # only pass NVFBC flags to builds that have them
-    if strings "$bin" 2>/dev/null | grep -q -- "-nvfbc_nocursor"; then
+    # only pass NVFBC flags to builds that have them, and let an explicit
+    # -nonvfbc in the spec opt out so one binary can be measured both ways
+    if [[ " ${extra[*]:-} " != *" -nonvfbc "* ]] \
+       && strings "$bin" 2>/dev/null | grep -q -- "-nvfbc_nocursor"; then
         nvargs=(-nvfbc -nvfbc_nocursor)
     fi
 
