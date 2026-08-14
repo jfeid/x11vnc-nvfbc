@@ -45,27 +45,50 @@ Note direct capture **does** engage with a small flip rect — the server logs
 application is the compositor itself (gnome-shell), which is what NvFBC
 attaches to, so the size of the thing being drawn is irrelevant.
 
-## Throughput and CPU cost (medium load, 960x540 @60fps)
+## Throughput and CPU across the load range
 
-| config | CPU | updates/s |
-|---|---|---|
-| nvfbc | 51.7% | 43.9 |
-| nvfbc +push | 50.5% | 48.3 |
-| nvfbc +direct | 49.4% | 43.6 |
+`ms/frame` is `cpu% / updates-per-sec`.
 
-Neither flag costs CPU; all three are within noise of each other. Push may
-deliver slightly more updates. The concern that push model would cost extra GPU
-work by generating frames faster than they are consumed did not show up at this
-load — an application rendering far above the served rate could still provoke
-it, which this does not test.
+| load | config | CPU | updates/s | ms/frame | MB/s |
+|---|---|---|---|---|---|
+| small 320x240 | nvfbc | 41.3% | 51.7 | 8.0 | 18.0 |
+| | **+push** | 38.6% | **56.3** | **6.9** | 17.8 |
+| medium 960x540 | nvfbc | 52.5% | 42.4 | 12.4 | 78.9 |
+| | **+push** | 50.9% | **47.9** | **10.6** | 90.0 |
+| full 2560x1440 | nvfbc | ~81% | **~27.0** | 30.0 | ~372 |
+| | +push | ~55% | **~20.9** | 26.5 | ~220 |
+
+The fullscreen row is three runs, and it is extremely repeatable:
+26.9/26.4/27.7 updates/s without push against 20.7/21.0/20.9 with it.
+
+**Push regresses the fullscreen case by 22% on delivered frames and 41% on
+pixel data**, while using 26 points less CPU. Per-frame it is still cheaper
+(26.5 vs 30.0 ms), so it is not being wasteful — it is delivering less.
+
+The mechanism is visible in the rectangle counts: 3.4 rects per update with
+push against 1.06 without, and ~10.4 MB per update against ~14 MB for a
+14 MB screen. Push model generates a frame per damage event, so captures land
+*mid-repaint* — loadgen issues 3600 fills per frame, and a capture taken part
+way through sees only the tiles painted so far. Each captured frame is
+internally coherent, but fewer complete screens per second reach the client.
+
+Sampling at `dwSamplingRateMs` avoids this by construction: captures are 16ms
+apart, which is longer than one full repaint, so each one tends to see a
+complete screen.
 
 ## Conclusion
 
-`-nvfbc_push` is worth enabling: ~10ms lower median latency, no CPU cost, no
-throughput cost, better tail than either the current default or direct capture.
+The flags trade differently by load, so this is a choice, not a default:
 
-`-nvfbc_direct` is not: it matches push on the median while adding a ~165ms
-tail, and it forces `-nvfbc_nocursor`.
+- **`-nvfbc_push` helps interactive work** — small and medium change areas gain
+  9-13% more frames at slightly lower CPU, and median latency drops ~10ms.
+- **`-nvfbc_push` hurts sustained fullscreen motion** — video playback and
+  games lose ~22% of delivered frames, though at much lower CPU.
+- **`-nvfbc_direct` is not worth enabling** either way: it matches push on the
+  median while adding a ~165ms tail, and it forces `-nvfbc_nocursor`.
+
+If the workload is mostly desktop use, enable push. If it is mostly fullscreen
+video, do not.
 
 ## What this corrects
 
@@ -74,6 +97,11 @@ An earlier assessment in this project called the latency benefit of push model
 no difference between sample and push modes. That was right at the time —
 `pollmode.c` measures the new-frame ratio at a fixed poll rate, not latency, so
 it could not have seen this. The hypothesis is now supported.
+
+An earlier version of this file recommended `-nvfbc_push` outright, on the
+strength of the latency result plus a throughput measurement taken only at
+medium load. Extending the throughput measurement across the load range found
+the fullscreen regression above, which that recommendation had not tested for.
 
 The first two sweeps at n=40 disagreed with each other about which config won
 (direct in run 1, push in run 2), because run-to-run variation of up to 16ms
