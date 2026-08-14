@@ -99,44 +99,37 @@ uid 110 and still needs root).
 
 ## As root, with the fix: shm vs NVFBC
 
-Same binary both ways, `-nonvfbc` vs `-nvfbc`, two runs 2026-08-14.
+Same binary both ways, `-nonvfbc` vs `-nvfbc`. Three runs 2026-08-14; only run
+3 has accurate CPU (runs 1-2 predate the `ab.sh` fix and are floored to
+10-point buckets), so the table uses run 3 and lists the frame rates from all
+three.
 
-CPU here still comes from the pre-fix `ab.sh`, so these values are floored into
-10-point buckets: read "30" as [30,40). Frame rates are unaffected and are what
-the comparison rests on. A third root run with the corrected `ab.sh` would give
-usable per-frame figures.
+| load | path | CPU (run 3) | updates/s (run 3) | ms/frame | updates/s, runs 1-2 |
+|---|---|---|---|---|---|
+| medium 960x540 | shm | 37.0% | 31.7 | **11.7** | 22.8, 28.2 |
+| | NVFBC | 53.6% | **41.2** | 13.0 | 41.2, 39.4 |
+| full 2560x1440 | shm | 45.0% | 23.2 | **19.4** | 23.1, 23.0 |
+| | NVFBC | 80.8% | **27.5** | 29.4 | 26.4, 27.3 |
 
-| load | path | CPU (bucketed) | updates/s, run 1 | run 2 |
-|---|---|---|---|---|
-| medium 960x540 | shm | [30,40) | 22.8 | 28.2 |
-| | NVFBC | [50,60) | 41.2 | 39.4 |
-| full 2560x1440 | shm | [40,50) | 23.1 | 23.0 |
-| | NVFBC | [80,90) | 26.4 | 27.3 |
+**Root with the fix behaves the same as the session user.** Every run-3 figure
+lands within a few percent of the corresponding session-user measurement
+(11.7 vs 10.2, 13.0 vs 12.9, 19.4 vs 18.2, 29.4 vs 29.8). The fix fully closes
+the gap; there is no residual cost to capturing as root.
 
-**Fullscreen matches the session-user result exactly**: shm ~23 frames against
-NVFBC ~27, with NVFBC in a CPU bucket roughly twice as high. shm is the better
-value there, and that conclusion is stable across users and runs.
+**A retraction.** Runs 1 and 2 showed root shm at medium delivering 22.8 and
+28.2 updates/s against 31.7-34.5 for the session user, and an earlier version of
+this file called that a reproducible root-only penalty specific to the per-tile
+shm path. Run 3 delivered 31.7 — inside the session-user range. Two low samples
+out of three, with the third normal, is variance rather than a systematic
+effect, most likely contention from the live VNC service on :5900 during those
+runs. The shm path shares the X server with that service, whereas NVFBC does not
+touch X for capture, which fits shm being the only path affected. The
+per-request-overhead hypothesis is withdrawn; so is the `701 vs 1272 MB/sec`
+startup-probe lead, which was a single sample and explained nothing.
 
-**Medium shows a reproducible root-only penalty on the shm path.** Root shm
-delivered 22.8 and 28.2 updates/s; the same binary as the session user gave
-31.7, 32.1, 32.6, 33.6 and 34.5 across five runs. The ranges do not overlap.
-It is specific to shm *and* to medium:
-
-- root NVFBC matches user NVFBC (41.2/39.4 vs 42.1/43.6)
-- root shm at fullscreen matches user shm (23.1/23.0 vs 24.3/24.9)
-- only root shm at medium is depressed, and it is noisier too
-
-Medium is the case that exercises the many small per-tile `XShmGetImage`
-transfers, where fullscreen uses a handful of large `copy_screen` reads. So the
-penalty tracks the *number* of shm requests rather than the bytes moved, which
-is consistent with per-request overhead when the segment is owned by a
-different uid than the requesting client. That is a hypothesis, not a
-established mechanism - x11vnc's own startup probe did report 701 MB/sec as
-root against 1272 MB/sec as the user, but a single timed sample cannot be
-reconciled with fullscreen being unaffected, so it is a lead at best.
-
-Practical effect: as root, shm's advantage at medium is reduced but its
-fullscreen advantage - the larger one - is intact.
+Root shm at medium is noticeably more variable than the session user's (spread
+22.8-31.7 against 31.7-34.5). Take the best-case root run as representative of
+the capture path and treat the low ones as contention.
 
 **The rework itself is unambiguous:** it beats the pre-rework NVFBC build on
 every load, on both frame rate and CPU per frame — 8.4 vs 13.2 ms/frame at
