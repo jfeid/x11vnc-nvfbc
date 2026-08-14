@@ -2,8 +2,11 @@
 
 > Comparing the fork against **stock x11vnc** (not just against its own earlier
 > self) is in [stock-comparison.md](stock-comparison.md). Short version: NVFBC's
-> value here depends on MIT-SHM being unavailable to the root service, which it
-> is. Read that before quoting any of the numbers below as "NVFBC is faster".
+> value here depends on MIT-SHM being unavailable to the root service. It
+> currently is — but because x11vnc hardcodes an owner-only shm segment mode,
+> not because root inherently cannot use shm, so it is fixable and that
+> dependency should not be treated as permanent. Read that before quoting any
+> of the numbers below as "NVFBC is faster".
 
 
 All on the same machine: RTX 3060, driver 550.163.01, X screen 4480x1440 across

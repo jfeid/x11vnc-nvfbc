@@ -49,15 +49,42 @@ which is the direction the crossover would eventually come from.
 (medium), 2.9x at full screen, and 2.4-2.5x better per-frame cost.
 
 **Which case applies here:** Xorg for `:1` runs as `giannis`, and the x11vnc
-service runs as **root**. Root cannot attach SHM segments created by the user's
-X server (`X_ShmAttach BadAccess`), so the production service is the `-noshm`
-row. That is the configuration the fork is justified against, and it is why
-commit `897cb8e` disables shm when NVFBC is active.
+service runs as **root**. The shm segments are created by x11vnc itself
+(`shmget(IPC_PRIVATE, ..., IPC_CREAT | 0600)` in scan.c), so under a root
+x11vnc they are root-owned mode 0600 and it is the *X server* (running as the
+session user) that cannot attach them. Empirically confirmed 2026-08-14: the
+stock build run as root against `:1` aborts at startup with
 
-The `+shm` rows are only reachable by running x11vnc as the session user. If
-that is possible here, stock x11vnc would use less CPU than the fork — at a
-lower frame rate. That trade is worth a deliberate decision rather than an
-assumption; see `x11vnc-deployment-setup` notes for why root was chosen.
+    X11 MIT Shared Memory Attach failed:
+    X Error of failed request:  BadAccess (attempt to access private resource denied)
+      Major opcode of failed request:  130 (MIT-SHM)
+      Minor opcode of failed request:  1 (X_ShmAttach)
+
+The error arrives asynchronously, so it is fatal rather than a graceful
+fallback — root stock needs `-noshm` to run at all. The production service is
+therefore the `-noshm` row. That is the configuration the fork is justified
+against, and it is why commit `897cb8e` disables shm when NVFBC is active.
+
+**Reaching the `+shm` rows.** Nothing about being root prevents MIT-SHM. The
+blocker is that hardcoded 0600, which assumes the client and the X server are
+the same user, so it would fail for any user mismatch in either direction.
+Two ways out:
+
+1. *Fix the segment mode.* Keep the single root service and grant the X server
+   access — preferably by `shmctl(IPC_SET)`ing `shm_perm.uid` to the owner of
+   `/tmp/.X11-unix/X<n>` (uid 1000 here) rather than widening the mode to 0666,
+   since the segment holds the framebuffer and 0666 would let any local user
+   read the screen. Smallest change, and it covers `:0` and `:1` alike.
+   **Untested:** the 0600 constant and the BadAccess above are verified, but
+   that changing the mode fixes it is inference, not measurement.
+2. *Run x11vnc as the session user.* Covers only the logged-in phase — the
+   greeter on `:0` reads `/run/user/110/gdm/Xauthority`, uid 110 mode 0600, so
+   that phase still needs root. Implies a wrapper that drops privileges and,
+   potentially, a different capture path depending on login state.
+
+Under either, stock x11vnc would use less CPU than the fork — at a lower frame
+rate. That trade is worth a deliberate decision rather than an assumption; see
+`x11vnc-deployment-setup` notes for why root was chosen.
 
 **The rework itself is unambiguous:** it beats the pre-rework NVFBC build on
 every load, on both frame rate and CPU per frame (5.7 vs 11.7, 11.6 vs 18.4,
