@@ -27,6 +27,19 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `pollmode` | compares sample/push and NOWAIT/timeout grab modes at a fixed poll rate |
 
 Recorded measurements and what each run was: `results/NOTES.md`.
+Fork vs **stock** x11vnc: `results/stock-comparison.md`.
+
+`ab.sh` takes a command string per entry, so extra flags and builds without
+NVFBC both work — it only passes `-nvfbc` to binaries that support it:
+
+```bash
+git -C ../x11vnc worktree add --detach /tmp/x11vnc-stock e2b726a
+cd /tmp/x11vnc-stock && autoreconf -fiv && ./configure && make -j$(nproc)
+cd - && GEOM=960x540+64+64 ./ab.sh \
+    /tmp/x11vnc-stock/src/x11vnc \
+    "/tmp/x11vnc-stock/src/x11vnc -noshm" \
+    ../x11vnc/src/x11vnc
+```
 
 ## Use
 

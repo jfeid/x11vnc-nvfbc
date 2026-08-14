@@ -1,5 +1,11 @@
 # Recorded runs
 
+> Comparing the fork against **stock x11vnc** (not just against its own earlier
+> self) is in [stock-comparison.md](stock-comparison.md). Short version: NVFBC's
+> value here depends on MIT-SHM being unavailable to the root service, which it
+> is. Read that before quoting any of the numbers below as "NVFBC is faster".
+
+
 All on the same machine: RTX 3060, driver 550.163.01, X screen 4480x1440 across
 two outputs (DP-2 1920x1200+2560+0, DP-4 2560x1440+0+0), server run with
 `-clip 2560x1440+0+0 -nvfbc -nvfbc_nocursor -threads -wait 5 -defer 10`, one
