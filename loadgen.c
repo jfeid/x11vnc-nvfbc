@@ -12,6 +12,9 @@
  */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +45,7 @@ int main(int argc, char **argv) {
 	const char *title = "loadgen";
 	long solid = -1;		/* -solid RRGGBB: hold one colour, for pixel checks */
 	int pipe_mode = 0;		/* -pipe: flip on demand, for latency probing */
+	int blit_mode = 0;		/* -blit: one large image per frame, like a video player */
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-g") && i + 1 < argc) {
@@ -53,6 +57,7 @@ int main(int argc, char **argv) {
 		} else if (!strcmp(argv[i], "-t") && i + 1 < argc) { title = argv[++i];
 		} else if (!strcmp(argv[i], "-solid") && i + 1 < argc) { solid = strtol(argv[++i], NULL, 16);
 		} else if (!strcmp(argv[i], "-pipe")) { pipe_mode = 1;
+		} else if (!strcmp(argv[i], "-blit")) { blit_mode = 1;
 		} else usage(argv[0]);
 	}
 	if (cell < 1) cell = 1;
@@ -83,6 +88,59 @@ int main(int argc, char **argv) {
 	double t0 = now_s(), next = t0;
 	long frames = 0;
 	double period = (rate > 0.0) ? 1.0 / rate : 0.0;
+
+	if (blit_mode) {
+		/*
+		 * One MIT-SHM XShmPutImage of the whole window per frame: the
+		 * damage pattern a video player produces, as opposed to the
+		 * thousands of small fills the default mode emits.  The
+		 * distinction matters for NVFBC push model, which generates a
+		 * frame per damage event and can otherwise capture part way
+		 * through a repaint.
+		 */
+		XShmSegmentInfo shminfo;
+		XImage *img = XShmCreateImage(dpy, DefaultVisual(dpy, scr),
+		    DefaultDepth(dpy, scr), ZPixmap, NULL, &shminfo, w, h);
+		if (!img) { fprintf(stderr, "loadgen: XShmCreateImage failed\n"); return 1; }
+		shminfo.shmid = shmget(IPC_PRIVATE,
+		    (size_t)img->bytes_per_line * img->height, IPC_CREAT | 0600);
+		if (shminfo.shmid < 0) { perror("shmget"); return 1; }
+		shminfo.shmaddr = img->data = shmat(shminfo.shmid, NULL, 0);
+		shminfo.readOnly = False;
+		if (!XShmAttach(dpy, &shminfo)) {
+			fprintf(stderr, "loadgen: XShmAttach failed\n"); return 1; }
+		XSync(dpy, False);
+		shmctl(shminfo.shmid, IPC_RMID, NULL);   /* reclaimed on exit */
+
+		printf("loadgen: blit %dx%d+%d+%d target=%.0f fps dur=%.0fs (one XShmPutImage/frame)\n",
+		    w, h, wx, wy, rate, dur);
+		fflush(stdout);
+
+		unsigned int *px = (unsigned int *)img->data;
+		long npx = (long)(img->bytes_per_line / 4) * img->height;
+		while (now_s() - t0 < dur) {
+			unsigned int base = (unsigned int)(frames * 2654435761u);
+			for (long k = 0; k < npx; k++) {
+				px[k] = base + (unsigned int)k;   /* whole surface changes */
+			}
+			XShmPutImage(dpy, win, gc, img, 0, 0, 0, 0, w, h, False);
+			XFlush(dpy);
+			frames++;
+			if (period > 0.0) {
+				next += period;
+				double slack = next - now_s();
+				if (slack > 0) usleep((useconds_t)(slack * 1e6));
+				else next = now_s();
+			}
+		}
+		double el = now_s() - t0;
+		printf("loadgen: %ld frames in %.2fs = %.1f achieved fps\n", frames, el, frames / el);
+		XShmDetach(dpy, &shminfo);
+		shmdt(shminfo.shmaddr);
+		XDestroyWindow(dpy, win);
+		XCloseDisplay(dpy);
+		return 0;
+	}
 
 	if (pipe_mode) {
 		/*

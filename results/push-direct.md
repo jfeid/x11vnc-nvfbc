@@ -76,19 +76,38 @@ Sampling at `dwSamplingRateMs` avoids this by construction: captures are 16ms
 apart, which is longer than one full repaint, so each one tends to see a
 complete screen.
 
+### ...but not for video-like repaints
+
+That repaint pattern is adversarial and unusual. A video player blits one large
+image per frame rather than issuing thousands of small draws, so `loadgen -blit`
+repaints with a single `XShmPutImage` of the whole window (59.8 fps achieved at
+2560x1440). Under that load the regression **disappears entirely**:
+
+| run | nvfbc | +push |
+|---|---|---|
+| 1 | 84.3% / 19.1 updates/s / 269 MB/s | 84.4% / 19.3 / 271 |
+| 2 | 85.3% / 19.2 / 270 | 85.1% / 19.5 / 273 |
+
+Identical within noise, and 1.0 rects per update for both — no fragmentation,
+because one blit is one damage event and a capture cannot land part way through
+it.
+
+So the fullscreen regression is specific to applications that repaint a large
+area via many small draw operations. Fullscreen *motion* content — video,
+games — does not behave that way.
+
 ## Conclusion
 
-The flags trade differently by load, so this is a choice, not a default:
+**`-nvfbc_push` is worth enabling.**
 
-- **`-nvfbc_push` helps interactive work** — small and medium change areas gain
-  9-13% more frames at slightly lower CPU, and median latency drops ~10ms.
-- **`-nvfbc_push` hurts sustained fullscreen motion** — video playback and
-  games lose ~22% of delivered frames, though at much lower CPU.
-- **`-nvfbc_direct` is not worth enabling** either way: it matches push on the
-  median while adding a ~165ms tail, and it forces `-nvfbc_nocursor`.
+- median latency down ~10ms (~16%)
+- 9-13% more frames at small and medium change areas, at slightly lower CPU
+- neutral at fullscreen under video-like repaints
+- the only regression found needs a large area repainted via thousands of small
+  draws, which is not how fullscreen motion content behaves
 
-If the workload is mostly desktop use, enable push. If it is mostly fullscreen
-video, do not.
+**`-nvfbc_direct` is not.** It matches push on the median while adding a ~165ms
+tail, and it forces `-nvfbc_nocursor`.
 
 ## What this corrects
 

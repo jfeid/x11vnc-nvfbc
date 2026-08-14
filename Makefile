@@ -11,7 +11,7 @@ BINS = loadgen nvfloor diffcheck pollmode
 all: $(BINS)
 
 loadgen: loadgen.c
-	$(CC) $(CFLAGS) -o $@ $< -lX11
+	$(CC) $(CFLAGS) -o $@ $< -lX11 -lXext
 
 nvfloor: nvfloor.c
 	$(CC) $(CFLAGS) -I$(NVFBC_INC) -o $@ $< -ldl

@@ -50,7 +50,12 @@ run(){
     local srv; srv=$(pgrep -f "rfbport $port" | head -1)
     if [ -z "$srv" ]; then echo "  $(basename "$bin"): FAILED TO START"; port=$((port+1)); return 1; fi
 
-    "$BENCH/loadgen" -g "$GEOM" -r 60 -d $((SECS+8)) >/dev/null 2>&1 &
+    # BLIT=1 repaints with one large XShmPutImage per frame (video-player
+    # damage) instead of thousands of small fills; push model behaves very
+    # differently between the two
+    local genargs=(-g "$GEOM" -r 60 -d $((SECS+8)))
+    [ "${BLIT:-0}" = 1 ] && genargs+=(-blit)
+    "$BENCH/loadgen" "${genargs[@]}" >/dev/null 2>&1 &
     local gen=$!
     sleep 2
     local c0 c1 out
@@ -76,5 +81,5 @@ run(){
     sleep 3
 }
 
-echo "load $GEOM @60fps, ${SECS}s, clip $CLIP, raw encoding"
+echo "load $GEOM @60fps${BLIT:+ (blit)}, ${SECS}s, clip $CLIP, raw encoding"
 for b in "$@"; do run "$b"; done
