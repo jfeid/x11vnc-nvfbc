@@ -19,34 +19,54 @@ cd /tmp/x11vnc-stock && autoreconf -fiv && ./configure && make -j$(nproc)
 `ms/frame` is CPU cost per delivered frame — `cpu% / updates-per-sec` — which
 normalises for the fact that the builds do not deliver the same frame rate.
 
+Re-measured 2026-08-14 after fixing a CPU-accounting bug in `ab.sh`: the old
+figures were floored into 10-point buckets (`bc` truncated the division before
+scaling up), understating every CPU value by 0-10 points. Frame rates were
+never affected. Relative conclusions survived; absolute values did not.
+
 | load | build | CPU | updates/s | ms/frame |
 |---|---|---|---|---|
-| small 320x240 | stock +shm | 20% | 37.7 | **5.3** |
-| | NVFBC before rework | 60% | 51.2 | 11.7 |
-| | NVFBC after rework | 30% | **52.3** | 5.7 |
-| medium 960x540 | stock +shm | 30% | 33.6 | **8.9** |
-| | stock -noshm | 50% | 18.2 | 27.5 |
-| | NVFBC before rework | 70% | 38.0 | 18.4 |
-| | NVFBC after rework | 50% | **43.1** | 11.6 |
-| full 2560x1440 | stock +shm | 40% | 24.8 | **16.1** |
-| | stock -noshm | 70% | 9.6 | 72.9 |
-| | NVFBC before rework | 80% | 19.1 | 41.9 |
-| | NVFBC after rework | 80% | **27.4** | 29.2 |
+| small 320x240 | stock +shm | 30.2% | 37.3 | **8.1** |
+| | stock -noshm | 49.6% | 32.8 | 15.1 |
+| | NVFBC before rework | 66.0% | 50.0 | 13.2 |
+| | NVFBC after rework | 43.0% | **50.9** | 8.4 |
+| medium 960x540 | stock +shm | 35.2% | 34.5 | **10.2** |
+| | stock -noshm | 56.4% | 20.4 | 27.6 |
+| | NVFBC before rework | 70.3% | 30.6 | 23.0 |
+| | NVFBC after rework | 54.4% | **42.1** | 12.9 |
+| full 2560x1440 | stock +shm | 45.3% | 24.9 | **18.2** |
+| | stock -noshm | 76.6% | 9.4 | 81.5 |
+| | NVFBC before rework | 85.4% | 19.5 | 43.8 |
+| | NVFBC after rework | 81.1% | **27.2** | 29.8 |
+
+The `NVFBC before rework` medium run took 22.9s for a 20s stream, so it was
+disturbed; treat that one row as soft.
 
 ## What this says
 
 **The answer depends entirely on whether MIT-SHM is available.**
 
 *Against stock with working shm*, NVFBC is a frame-rate win and a CPU-efficiency
-loss: 10-28% more frames delivered, but 1.3-1.8x more CPU per frame. NVFBC
-transfers the whole captured region on every new frame regardless of how much
-changed, so its cost is O(screen area). Stock reads sampled scanlines plus the
-tiles that actually changed, so its cost is O(changed area). Stock wins on
-efficiency at every size tested — the gap narrows as more of the screen changes,
-which is the direction the crossover would eventually come from.
+loss: it delivers 9-36% more frames but costs 1.04-1.64x more CPU per frame.
 
-*Against stock without shm*, NVFBC wins decisively: 2.4x the frames at equal CPU
-(medium), 2.9x at full screen, and 2.4-2.5x better per-frame cost.
+The gap **widens** as more of the screen changes — 8.1 vs 8.4 ms/frame at small
+(a tie), 10.2 vs 12.9 at medium, 18.2 vs 29.8 at full. An earlier version of
+this file claimed the opposite and predicted a crossover in NVFBC's favour at
+large change areas; the corrected numbers show no such crossover, and the trend
+runs the other way.
+
+That direction makes sense: NVFBC always transfers the whole captured region
+across PCIe regardless of how much changed, so its cost is O(screen area) and
+essentially fixed per frame, and it then pays two further full-frame copies.
+Stock reads sampled scanlines plus the changed tiles out of the X server, with
+no PCIe readback in this path at all, so it is cheaper per byte and only pays
+for what changed. At small change areas the two land in the same place; the
+more that changes, the further ahead stock gets.
+
+What NVFBC buys here is therefore frame *rate*, not CPU efficiency.
+
+*Against stock without shm*, NVFBC wins decisively: 1.6-2.9x the frames and
+1.8-2.7x better per-frame cost.
 
 **Which case applies here:** Xorg for `:1` runs as `giannis`, and the x11vnc
 service runs as **root**. The shm segments are created by x11vnc itself
@@ -79,41 +99,55 @@ uid 110 and still needs root).
 
 ## As root, with the fix: shm vs NVFBC
 
-Same binary both ways, `-nonvfbc` vs `-nvfbc`, 2026-08-14.
+Same binary both ways, `-nonvfbc` vs `-nvfbc`, two runs 2026-08-14.
 
-| load | path | CPU | updates/s | ms/frame |
+CPU here still comes from the pre-fix `ab.sh`, so these values are floored into
+10-point buckets: read "30" as [30,40). Frame rates are unaffected and are what
+the comparison rests on. A third root run with the corrected `ab.sh` would give
+usable per-frame figures.
+
+| load | path | CPU (bucketed) | updates/s, run 1 | run 2 |
 |---|---|---|---|---|
-| medium 960x540 | shm | 30% | 22.8 | 13.2 |
-| | NVFBC | 50% | **41.2** | **12.1** |
-| full 2560x1440 | shm | 40% | 23.1 | **17.3** |
-| | NVFBC | 80% | **26.4** | 30.3 |
+| medium 960x540 | shm | [30,40) | 22.8 | 28.2 |
+| | NVFBC | [50,60) | 41.2 | 39.4 |
+| full 2560x1440 | shm | [40,50) | 23.1 | 23.0 |
+| | NVFBC | [80,90) | 26.4 | 27.3 |
 
-At fullscreen the picture is clear and matches the session-user measurements:
-NVFBC buys 14% more frames for double the CPU, so shm is much better value.
+**Fullscreen matches the session-user result exactly**: shm ~23 frames against
+NVFBC ~27, with NVFBC in a CPU bucket roughly twice as high. shm is the better
+value there, and that conclusion is stable across users and runs.
 
-**The medium row is unresolved.** As root, shm delivered 22.8 updates/s; as the
-session user the same binary delivered 32.1, 32.6 and 33.6 across three runs,
-all at the same 30% CPU. Full-screen shows no such gap (23.1 root vs 23.8
-user), which is the opposite of what a general read-path slowdown would do.
-x11vnc's own startup probe did report `fb read rate: 701 MB/sec` as root
-against `1272 MB/sec` as the user, with otherwise byte-identical startup logs —
-but that is a single timed sample, and it cannot be reconciled with fullscreen
-being unaffected. Treat it as a lead, not a mechanism.
+**Medium shows a reproducible root-only penalty on the shm path.** Root shm
+delivered 22.8 and 28.2 updates/s; the same binary as the session user gave
+31.7, 32.1, 32.6, 33.6 and 34.5 across five runs. The ranges do not overlap.
+It is specific to shm *and* to medium:
 
-This matters because it decides the medium case: at 22.8 NVFBC wins on both
-counts, while at ~32 shm would win on efficiency (9.4 vs 12.1 ms/frame). One
-root sample against three user samples is not enough. **Repeat the root run
-before acting on the medium row.**
+- root NVFBC matches user NVFBC (41.2/39.4 vs 42.1/43.6)
+- root shm at fullscreen matches user shm (23.1/23.0 vs 24.3/24.9)
+- only root shm at medium is depressed, and it is noisier too
+
+Medium is the case that exercises the many small per-tile `XShmGetImage`
+transfers, where fullscreen uses a handful of large `copy_screen` reads. So the
+penalty tracks the *number* of shm requests rather than the bytes moved, which
+is consistent with per-request overhead when the segment is owned by a
+different uid than the requesting client. That is a hypothesis, not a
+established mechanism - x11vnc's own startup probe did report 701 MB/sec as
+root against 1272 MB/sec as the user, but a single timed sample cannot be
+reconciled with fullscreen being unaffected, so it is a lead at best.
+
+Practical effect: as root, shm's advantage at medium is reduced but its
+fullscreen advantage - the larger one - is intact.
 
 **The rework itself is unambiguous:** it beats the pre-rework NVFBC build on
-every load, on both frame rate and CPU per frame (5.7 vs 11.7, 11.6 vs 18.4,
-29.2 vs 41.9 ms/frame).
+every load, on both frame rate and CPU per frame — 8.4 vs 13.2 ms/frame at
+small, 12.9 vs 23.0 at medium, 29.8 vs 43.8 at full, while delivering the same
+or more frames (50.9 vs 50.0, 42.1 vs 30.6, 27.2 vs 19.5).
 
 ## Caveats
 
 - Raw encoding, so encoder cost is identical across builds but lower than the
   Tight encoding a real client negotiates. Absolute CPU is understated; the
   comparison between builds is not affected.
-- CPU is sampled from `/proc/<pid>/stat` at 10ms granularity over 20s, so the
-  10%-quantised values carry roughly +/-1 point of error.
+- CPU comes from `/proc/<pid>/stat` over 20s. The session-user table is exact;
+  the root table predates the `ab.sh` fix and is floored to 10-point buckets.
 - One client attached. Encoding cost scales with client count.

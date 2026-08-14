@@ -62,9 +62,13 @@ run(){
     grep -q "NVFBC: Capture initialized" "$log" && mode="NVFBC"
     grep -qE "ShmAttach|shm_create|XShmGetImage.*fail" "$log" && mode="$mode(shm-issue)"
 
+    # CPU% = ticks / seconds, since CLK_TCK is 100/s.  Do NOT divide first and
+    # scale up: bc truncates at `scale` before the multiply, which floored
+    # every result into a 10-point bucket (613, 659 and 795 ticks all read as
+    # "30.0").
     LC_ALL=C printf "  %-34s %-8s cpu=%5.1f%%  %s\n" \
         "$(basename "$bin")${extra[*]+ ${extra[*]}}" "$mode" \
-        "$(LC_ALL=C echo "scale=1;($c1-$c0)/($SECS*100)*100"|bc)" "$out"
+        "$(LC_ALL=C echo "scale=1;($c1-$c0)/$SECS"|bc)" "$out"
 
     kill "$gen" 2>/dev/null
     kill -9 "$srv" 2>/dev/null
