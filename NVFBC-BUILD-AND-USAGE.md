@@ -88,9 +88,12 @@ x11vnc -nvfbc -display :0
 | `-nvfbc_direct` | Allow NVFBC to attach directly to a fullscreen app, bypassing the X server. Implies `-nvfbc_push` and `-nvfbc_nocursor` |
 | `-nvfbc_nodirect` | Disable direct capture (default) |
 
-`-nvfbc_push` lowers latency (no wait for the next sample tick) but lets an
-application rendering far above the served frame rate cost extra GPU work, so
-it is opt-in. Measure both ways with `bench/` before committing to it.
+`-nvfbc_push` has been measured and is enabled in production: ~10ms lower
+median latency and 9-13% more frames at small and medium change areas, at
+slightly lower CPU, and neutral at fullscreen under video-like repaints. The one
+regression found needs a large area repainted via thousands of small draw calls.
+`-nvfbc_direct` is **not** recommended - it matches push on median latency while
+adding a ~165ms tail. Full numbers: `bench/results/push-direct.md`.
 
 ### Capture region
 
@@ -123,55 +126,18 @@ Note: When using `-nvfbc_nocursor`, x11vnc will draw the cursor via X11 instead,
 ## Systemd Service Configuration
 
 ### Wrapper Script
-Create `/usr/local/bin/x11vnc-wrapper.sh`:
-```bash
-#!/bin/bash
 
-USER_AUTH="/run/user/1000/gdm/Xauthority"
-GDM_AUTH="/run/user/110/gdm/Xauthority"
+The wrapper that runs in production is tracked at
+[`deploy/x11vnc-wrapper.sh`](deploy/x11vnc-wrapper.sh), kept byte-identical to
+the installed copy. [`deploy/README.md`](deploy/README.md) explains what it does,
+why each flag is set, and how to install a change.
 
-while true; do
-  if [ -f "$USER_AUTH" ] && DISPLAY=:1 XAUTHORITY=$USER_AUTH xdpyinfo >/dev/null 2>&1; then
-          DISPLAY=:1
-          AUTH=$USER_AUTH
-  elif [ -f "$GDM_AUTH" ] && DISPLAY=:0 XAUTHORITY=$GDM_AUTH xdpyinfo >/dev/null 2>&1; then
-          DISPLAY=:0
-          AUTH=$GDM_AUTH
-  else
-          sleep 2
-          continue
-  fi
+It loops over the available display rather than exiting, because the right one
+changes over the machine's life: `:1` with the user's `Xauthority` once someone
+is logged in, `:0` with gdm's before that.
 
-  # IMPORTANT: Export DISPLAY and XAUTHORITY for NVFBC
-  export DISPLAY
-  export XAUTHORITY=$AUTH
-
-  /usr/bin/x11vnc \
-          -display $DISPLAY \
-          -auth $AUTH \
-          -forever \
-          -shared \
-          -rfbauth /etc/x11vnc.passwd \
-          -rfbport 5900 \
-          -nvfbc \
-          -nvfbc_nocursor \
-          -repeat \
-          -threads \
-          -wait 5 \
-          -defer 10 \
-          -xkb \
-          -o /var/log/x11vnc.log
-
-  sleep 5
-done
-```
-
-Make it executable:
-```bash
-sudo chmod +x /usr/local/bin/x11vnc-wrapper.sh
-```
-
-**Important:** The `export DISPLAY` and `export XAUTHORITY` lines are critical. NVFBC reads these environment variables directly, unlike x11vnc which uses the `-display` and `-auth` command-line arguments.
+**Important:** the wrapper exports `DISPLAY` and `XAUTHORITY` as well as passing
+`-display`/`-auth`. NVFBC reads the environment directly, unlike x11vnc itself.
 
 ### Systemd Service
 Create `/etc/systemd/system/x11vnc.service`:
@@ -257,7 +223,8 @@ sudo ldconfig
 NVFBC: Unable to open display
 ```
 
-**Solution:** Ensure DISPLAY and XAUTHORITY environment variables are exported before running x11vnc. See the wrapper script above.
+**Solution:** Ensure DISPLAY and XAUTHORITY environment variables are exported
+before running x11vnc - see [`deploy/x11vnc-wrapper.sh`](deploy/x11vnc-wrapper.sh).
 
 ### "Capture not possible on this display"
 This can occur if:
