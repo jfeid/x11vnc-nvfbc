@@ -6,16 +6,18 @@ is not knowledge that exists only on the filesystem.
 | file | installed at | owner |
 |---|---|---|
 | `x11vnc-wrapper.sh` | `/usr/local/bin/x11vnc-wrapper.sh` | `root:root 0755` |
+| `x11vnc.service` | `/etc/systemd/system/x11vnc.service` | `root:root 0644` |
 
 These are kept **byte-identical** to the installed copies on purpose — no added
 header comments, no reformatting — so that a diff means drift and nothing else:
 
 ```bash
-diff /usr/local/bin/x11vnc-wrapper.sh deploy/x11vnc-wrapper.sh
+diff /usr/local/bin/x11vnc-wrapper.sh    deploy/x11vnc-wrapper.sh
+diff /etc/systemd/system/x11vnc.service  deploy/x11vnc.service
 ```
 
-Install a change (the `mv` matters: the kernel refuses to write to a running
-executable, and doing it in two steps avoids a window where the file is
+Install a wrapper change (the `mv` matters: the kernel refuses to write to a
+running executable, and doing it in two steps avoids a window where the file is
 half-written):
 
 ```bash
@@ -23,6 +25,38 @@ sudo cp deploy/x11vnc-wrapper.sh /usr/local/bin/x11vnc-wrapper.sh.new
 sudo chmod 755 /usr/local/bin/x11vnc-wrapper.sh.new
 sudo mv -f /usr/local/bin/x11vnc-wrapper.sh.new /usr/local/bin/x11vnc-wrapper.sh
 sudo systemctl restart x11vnc
+```
+
+Install a unit change:
+
+```bash
+sudo cp deploy/x11vnc.service /etc/systemd/system/x11vnc.service
+sudo systemctl daemon-reload
+sudo systemctl restart x11vnc
+```
+
+## The unit
+
+```ini
+[Unit]
+Description=x11vnc remote desktop server
+After=display-manager.service
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/x11vnc-wrapper.sh
+Restart=always
+RestartSec=3
+```
+
+`Restart=always` covers the wrapper being killed; the wrapper's own loop covers
+x11vnc exiting while the wrapper survives (session end, display going away), so
+neither layer alone is redundant.
+
+`systemctl status x11vnc` reports the **wrapper's** pid as `MainPID`, not
+x11vnc's — x11vnc is its child. To find the server process itself:
+
+```bash
+pgrep -af '^/usr/bin/x11vnc'
 ```
 
 ## What the wrapper does
@@ -60,8 +94,26 @@ user can reach both.
 `-nvfbc_direct` is deliberately **not** set: it matches `-nvfbc_push` on median
 latency while adding a ~165ms tail.
 
+## Verifying what is actually running
+
+The binary is replaced by rename, and a running process keeps executing the
+inode it started with, so "what is installed" and "what is running" can differ
+until a restart. Comparing the binary's mtime against the process start time
+settles it:
+
+```bash
+stat -c %y /usr/bin/x11vnc
+ps -o lstart= -p "$(pgrep -f '^/usr/bin/x11vnc' | head -1)"
+```
+
+A build is not identified by `x11vnc -version`, which only reports upstream's
+0.9.17. Use the hash, or probe for a feature:
+
+```bash
+sha256sum /usr/bin/x11vnc
+strings /usr/bin/x11vnc | grep -F 'MIT-SHM: handing segments'   # f3f28ad or later
+```
+
 ## Not tracked here
 
-- `/etc/systemd/system/x11vnc.service` — 12 lines, unchanged from what
-  `../NVFBC-BUILD-AND-USAGE.md` documents.
 - `/etc/x11vnc.passwd` — a credential. Never commit it.

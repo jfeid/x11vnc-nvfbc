@@ -140,28 +140,20 @@ is logged in, `:0` with gdm's before that.
 `-display`/`-auth`. NVFBC reads the environment directly, unlike x11vnc itself.
 
 ### Systemd Service
-Create `/etc/systemd/system/x11vnc.service`:
-```ini
-[Unit]
-Description=x11vnc VNC Server with NVFBC
-After=display-manager.service
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/x11vnc-wrapper.sh
-Restart=always
-RestartSec=5
+The unit is tracked at [`deploy/x11vnc.service`](deploy/x11vnc.service),
+byte-identical to the installed copy. It simply runs the wrapper under
+`Restart=always`; the wrapper's own loop handles x11vnc exiting while the
+wrapper survives.
 
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
 ```bash
+sudo cp deploy/x11vnc.service /etc/systemd/system/x11vnc.service
 sudo systemctl daemon-reload
-sudo systemctl enable x11vnc
-sudo systemctl start x11vnc
+sudo systemctl enable --now x11vnc
 ```
+
+Note `systemctl status x11vnc` shows the **wrapper's** pid, not x11vnc's — see
+[`deploy/README.md`](deploy/README.md).
 
 ## Performance
 
