@@ -84,16 +84,40 @@ user can reach both.
 
 | flag | reason |
 |---|---|
-| `-nvfbc -nvfbc_nocursor` | NVFBC capture; cursor drawn by x11vnc instead |
-| `-nvfbc_push` | ~10ms lower median latency, more frames at small/medium change areas — see `../../bench/results/push-direct.md` |
-| `-clip 2560x1440+0+0` | serve only DP-4, not the whole 4480x1440 screen. Also selects NVFBC's capture region, which is the larger effect |
+| `-clip 2560x1440+0+0` | serve only DP-4, not the whole 4480x1440 screen |
 | `-localhost` | no direct exposure; reach it over an SSH tunnel |
 | `-threads` | one thread per client |
-| *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec (1140 MB/sec here), which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../../bench/results/wait-defer.md` |
 | `-repeat -xkb` | keyboard behaviour; see `../keyboard-issues-and-future-work.md` |
+| *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec, which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../../bench/results/wait-defer.md` |
+| *(no `-nvfbc`)* | deliberately unset — see below |
 
-`-nvfbc_direct` is deliberately **not** set: it matches `-nvfbc_push` on median
-latency while adding a ~165ms tail.
+### Why NVFBC is not enabled
+
+The fork's NVFBC capture path works and is maintained, but measured against the
+MIT-SHM path it trades CPU for frame rate rather than beating it outright:
+
+| load | shm | NVFBC | |
+|---|---|---|---|
+| small 320x240 | 37.3 fps @ 30.2% | 50.9 @ 43.0% | +36% frames |
+| medium 960x540 | 34.5 @ 35.2% | 42.1 @ 54.4% | +22% frames, 26% worse per frame |
+| full 2560x1440 | 24.9 @ 45.3% | 27.2 @ 81.1% | +9% frames, 64% worse per frame |
+
+NVFBC transfers the whole captured region over PCIe every frame regardless of
+how much changed, then copies it twice more; shm reads only the changed tiles.
+The efficiency gap therefore widens with change area. Latency is a wash
+(58.9ms shm against 54.4ms NVFBC with push).
+
+Full numbers: `../../bench/results/stock-comparison.md`.
+
+**To switch back to NVFBC**, add `-nvfbc -nvfbc_nocursor -nvfbc_push` to the
+invocation. Do not instead append `-nonvfbc` to an NVFBC-enabled line: it works
+(later flags win) but reads as self-contradictory and silently flips meaning if
+the flags are ever reordered.
+
+Note the shm path depends on the segment-handover fix in `f3f28ad` when the
+service runs as root against a user-owned X server — without it x11vnc aborts
+at startup with `X_ShmAttach BadAccess`, and `-noshm` is far slower than either
+option here.
 
 ## Verifying what is actually running
 

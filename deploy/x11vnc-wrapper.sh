@@ -26,9 +26,6 @@ while true; do
 	  -rfbauth /etc/x11vnc.passwd \
           -localhost \
 	  -rfbport 5900 \
-	  -nvfbc \
-	  -nvfbc_nocursor \
-	  -nvfbc_push \
 	  -repeat \
 	  -threads \
 	  -clip 2560x1440+0+0 \
