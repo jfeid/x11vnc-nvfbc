@@ -148,6 +148,29 @@ geometry comes from `GEOM`, and `BLIT=1` switches to video-like repaints)
 
 Use `measure.py` for CPU and `grabs_per_frame`; use `ab.sh` for frame delivery.
 
+## Hazard: test servers and X server auto-repeat
+
+x11vnc **disables the X server's global key auto-repeat** while a client is
+connected, unless `-repeat` is passed — `no_autorepeat` defaults to on. It
+restores the setting via `cleanup.c` on a normal exit, which `kill -9` skips.
+
+Every script here starts throwaway servers and stops them with `kill -9`, so
+without `-repeat` a benchmark run leaves the *user's* desktop with auto-repeat
+switched off: holding a key stops repeating, and nothing in the live service's
+own log explains why. This happened once during development and took a bug
+report to notice.
+
+All harness scripts now pass `-repeat`, which makes both disable paths
+(`connections.c` on first client, `check_autorepeat()` in `xevents.c`) no-ops.
+If you add a new script that starts x11vnc, pass it too.
+
+To check and repair by hand:
+
+```bash
+xset q | grep 'auto repeat:'
+xset r on
+```
+
 ## Noise floor
 
 Two back-to-back baseline runs agreed within **±3–8%** on the loaded scenarios.

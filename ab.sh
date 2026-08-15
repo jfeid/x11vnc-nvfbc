@@ -42,7 +42,7 @@ run(){
         nvargs=(-nvfbc -nvfbc_nocursor)
     fi
 
-    "$bin" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost \
+    "$bin" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost -repeat \
         -rfbport "$port" "${nvargs[@]}" "${extra[@]+"${extra[@]}"}" -clip "$CLIP" \
         -threads -wait 5 -defer 10 -o "$log" >/dev/null 2>&1 &
     sleep 6

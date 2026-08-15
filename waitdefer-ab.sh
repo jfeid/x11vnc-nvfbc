@@ -37,7 +37,7 @@ for v in "${VARIANTS[@]}"; do
     label="${v%%|*}"; flags="${v#*|}"
     log="/tmp/wd-$(id -u)-$port.log"; rm -f "$log"
     # shellcheck disable=SC2086
-    "$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost \
+    "$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost -repeat \
         -rfbport "$port" -nvfbc -nvfbc_nocursor -nvfbc_push -clip "$CLIP" \
         -threads $flags -o "$log" >/dev/null 2>&1 &
     sleep 6

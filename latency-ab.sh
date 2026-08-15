@@ -34,7 +34,7 @@ run(){
     local label="$1"; shift
     local log="/tmp/lat-$(id -u)-$port.log"
     rm -f "$log"
-    "$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost \
+    "$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost -repeat \
         -rfbport "$port" "$@" -clip "$CLIP" -threads -wait 5 -defer 10 \
         -o "$log" >/dev/null 2>&1 &
     sleep 6

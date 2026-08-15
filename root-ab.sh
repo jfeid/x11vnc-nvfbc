@@ -30,7 +30,7 @@ echo
 echo "### pre-flight: root + MIT-SHM, no NVFBC"
 LOG=/tmp/root-shm-preflight.log
 rm -f "$LOG"
-"$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost \
+"$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost -repeat \
     -rfbport 5931 -nonvfbc -clip "$CLIP" -threads -wait 5 -defer 10 \
     -o "$LOG" >/dev/null 2>&1 &
 sleep 7

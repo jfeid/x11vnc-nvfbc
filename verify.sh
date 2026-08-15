@@ -21,7 +21,7 @@ trap cleanup EXIT
 
 rm -f "$LOG"
 echo "### starting $BIN on :$PORT"
-"$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost \
+"$BIN" -display "$DISPLAY" -auth "$XAUTHORITY" -forever -shared -nopw -localhost -repeat \
        -rfbport "$PORT" -nvfbc -nvfbc_nocursor -clip 2560x1440+0+0 \
        -threads -wait 5 -defer 10 -o "$LOG" >/dev/null 2>&1 &
 SRV=$!
