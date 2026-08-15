@@ -31,8 +31,6 @@ while true; do
 	  -nvfbc_push \
 	  -repeat \
 	  -threads \
-	  -wait 5 \
-	  -defer 10 \
 	  -clip 2560x1440+0+0 \
 	  -xkb \
 	  -o /var/log/x11vnc.log

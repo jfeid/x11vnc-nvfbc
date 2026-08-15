@@ -88,7 +88,8 @@ user can reach both.
 | `-nvfbc_push` | ~10ms lower median latency, more frames at small/medium change areas — see `../../bench/results/push-direct.md` |
 | `-clip 2560x1440+0+0` | serve only DP-4, not the whole 4480x1440 screen. Also selects NVFBC's capture region, which is the larger effect |
 | `-localhost` | no direct exposure; reach it over an SSH tunnel |
-| `-threads -wait 5 -defer 10` | upstream defaults for responsiveness |
+| `-threads` | one thread per client |
+| *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec (1140 MB/sec here), which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../../bench/results/wait-defer.md` |
 | `-repeat -xkb` | keyboard behaviour; see `../keyboard-issues-and-future-work.md` |
 
 `-nvfbc_direct` is deliberately **not** set: it matches `-nvfbc_push` on median
