@@ -25,9 +25,17 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `nvfloor` | this machine's NVFBC cost floor, independent of x11vnc |
 | `diffcheck` | validates the NVFBC diff map against an independent per-tile memcmp |
 | `pollmode` | compares sample/push and NOWAIT/timeout grab modes at a fixed poll rate |
+| `latency.py` | damage-to-client latency: flips a rect and times how long it takes to reach a VNC client |
+| `latency-ab.sh` | drives `latency.py` across capture configurations; `REVERSE=1` controls for sweep position |
+| `waitdefer-ab.sh` | `-wait`/`-defer` variants, latency (`MODE=lat`) or throughput (`MODE=tput`) |
+| `root-ab.sh` | the shm-vs-NVFBC comparison that can only be done as root |
+| `remote-check.sh` | exercises the NVFBC remote-control interface against a running server |
 
 Recorded measurements and what each run was: `results/NOTES.md`.
 Fork vs **stock** x11vnc: `results/stock-comparison.md`.
+Push/direct flags: `results/push-direct.md`.
+`-wait`/`-defer` under push: `results/wait-defer.md`.
+Remote-control interface: `results/remote-control.md`.
 
 `ab.sh` takes a command string per entry, so extra flags and builds without
 NVFBC both work — it only passes `-nvfbc` to binaries that support it:
@@ -75,9 +83,10 @@ Flags: `--duration N` (default 30 s per scenario), `--scenarios a,b,c`,
 | `cpu_ms_per_frame` | derived | CPU amortised per useful frame |
 | `kb_per_sec` | `ss -tin bytes_sent` on :5900 | bytes actually delivered to clients |
 
-`grabs_per_frame` is the cleanest pass/fail signal. Today it is 93–159 because
-every `copy_image()` call issues a fresh full-frame grab; one grab per scan
-cycle should collapse it to ~1.
+`grabs_per_frame` is the cleanest pass/fail signal. Before the capture rework it
+was 93–159, because every `copy_image()` call issued a fresh full-frame grab;
+with one grab per scan cycle it now sits at 1.2–2.1. A number far above that
+means the per-cycle caching has regressed.
 
 ### Scenarios
 
@@ -131,8 +140,11 @@ throwaway ports under the same load and the same client and reports
 proportional to the area each build marks modified:
 
 ```bash
-./ab.sh /usr/bin/x11vnc.bak-20260813 ../x11vnc/src/x11vnc "2560x1440+0+0"
+GEOM=2560x1440+0+0 ./ab.sh /usr/bin/x11vnc.bak-20260813 ../x11vnc/src/x11vnc
 ```
+
+(every positional argument is a binary-plus-flags command string; the load
+geometry comes from `GEOM`, and `BLIT=1` switches to video-like repaints)
 
 Use `measure.py` for CPU and `grabs_per_frame`; use `ab.sh` for frame delivery.
 
