@@ -3,6 +3,7 @@ loadgen
 nvfloor
 diffcheck
 pollmode
+keytarget
 
 __pycache__/
 *.pyc

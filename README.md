@@ -30,6 +30,9 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `waitdefer-ab.sh` | `-wait`/`-defer` variants, latency (`MODE=lat`) or throughput (`MODE=tput`) |
 | `root-ab.sh` | the shm-vs-NVFBC comparison that can only be done as root |
 | `remote-check.sh` | exercises the NVFBC remote-control interface against a running server |
+| `keytarget` | keypress-driven repaint window: the server-side target for `vncprobe.ps1` |
+| `vncprobe.ps1` | Windows-side RFB probe: keypress -> first update latency over the real transport (tunnel/WLAN/VDSL) |
+| `vncprobe.py` | same probe, run server-side over loopback: isolates the server half from the transport |
 
 Recorded measurements and what each run was: `results/NOTES.md`.
 Fork vs **stock** x11vnc: `results/stock-comparison.md`.
@@ -170,6 +173,89 @@ To check and repair by hand:
 xset q | grep 'auto repeat:'
 xset r on
 ```
+
+## End-to-end keypress latency (client side)
+
+`latency.py` measures the server half (damage -> client, same machine).
+For the full round trip a remote user feels — key event through the transport,
+app repaint, capture, encode, back through the transport — the probe sits on
+the **client** machine:
+
+- `keytarget` (server): override-redirect window that raises itself and
+  repaints whenever the probe key arrives. The repaint is the provable response
+  to the injected key. It uses `select()` on the X connection — a polling loop
+  here would add tens of ms and falsify the measurement. By default it grabs
+  **only the probe key** (`-k`, default Page Down `0xFF56`) on the root window
+  and never takes focus, so the desktop stays usable while a run is going.
+- `vncprobe.ps1` (Windows): minimal RFB 3.8 client; sends a key event and
+  times the first FramebufferUpdate carrying rects, scoped to the keytarget
+  rect so unrelated desktop changes can't count.
+
+```bash
+# server side
+./keytarget -g 400x300+64+64 -d 300 &
+../x11vnc/src/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \
+    -forever -shared -nopw -localhost -rfbport 5918 -repeat -noipv6 \
+    -clip 2560x1440+0+0 -threads -nonap -nocursor
+# client side (after: ssh -L 5918:127.0.0.1:5918 x11vnc — the ssh config
+# entry already forwards 5900; the extra -L adds 5918 for this server)
+.\vncprobe.ps1 -Port 5918 -Rect 64,64,400,300 -Trials 10
+```
+
+Gotchas found while validating this (all encoded in the tools already):
+
+- Keep IPv6 out of the path — this is the one that looks like "the tunnel is
+  down" and isn't. **Two different sockets can end up serving `::1`, and only
+  one of them answers.** Whichever loses the startup bind race is visible in
+  the server's own log:
+
+  | log line at startup | owner of `::1` | behaviour |
+  |---|---|---|
+  | `Listening for VNC connections on TCP6 port N` … `Not listening on IPv6 interface.` | libvncserver | accepted by its listener thread, fine |
+  | `rfbListenOnTCP6Port: error in bind IPv6 socket: Address already in use` … `Listening also on IPv6 port N (socket 9)` | x11vnc | **hangs**, see below |
+
+  When x11vnc owns the socket it is `accept()`ed only by `check_ipv6_listen()`
+  (`connections.c:1746`), whose single call site is `rfbPE()` (`util.c:598`).
+  Under `-threads`, `watch_loop()` never reaches `rfbPE()` and every other
+  caller is client- or input-driven, so while no client is attached nothing
+  ever accepts. The kernel completes the handshake regardless, so the client's
+  `connect()` succeeds and the banner simply never comes — measured: **220 s,
+  no banner**; in another run it arrived 3.7 s after connect, the instant an
+  unrelated IPv4 client attached and put `rfbPE()` back in play.
+
+  The bench throwaway lands in the second row every time; the live 5900
+  service happens to land in the first, which is why its `LocalForward 5900
+  localhost:5900` works despite resolving to `::1`. What decides the race is
+  not established — ruled out: `-nopw` vs `-rfbauth`, `-nonap`, `-nocursor`,
+  `-xkb`, `-wait`/`-defer`/`-nowait_bog`, `-extra_fbur`, libvncserver version,
+  binary version. Untested: the live service runs as **root**, every test here
+  ran as the user. Don't depend on landing in the good row: use
+  `-L 5918:127.0.0.1:5918` and pass `-noipv6`; either alone is enough.
+- `-repeat` on the throwaway server: without it x11vnc switches off the X
+  server's global auto-repeat for the user's live session (see hazard above).
+- Don't use `-graball` on a machine someone is sitting at. It calls
+  `XGrabKeyboard`, which GNOME here **grants** — every keystroke then goes to
+  keytarget and the desktop cannot be typed into at all until it exits, with
+  Escape the only interactive way out. Escape exits *before* the counter
+  increments, so an aborted run is recognisable by `keytarget: 0 keypresses`
+  with FAILs on every trial. The default single-key grab has none of this:
+  only the probe key is intercepted, focus is left alone, and `-k` must match
+  the probe's `-Keysym`.
+- The window must be **visible**: a covered window repaints into nothing the
+  capture path can see. keytarget is override-redirect and raises itself per
+  keypress because mutter ignores raises on managed windows.
+- Adaptive pacing bites: on a fast capture path x11vnc resets `-wait`/`-defer`
+  to 10/10 unless given explicitly, so pass `-wait 2 -defer 2` if you want the
+  pipeline floor rather than the production cadence.
+
+Local reference (this machine, adaptive 10/10 pacing, keytarget flow):
+median ~55 ms, min ~20 ms — i.e. ~2 delivery periods. Transport adds its RTT
+on top; measure that with a TCP handshake to the ssh host.
+
+Re-measured 2026-08-16 with `vncprobe.py` over loopback, same pacing:
+`n=10 min=16.2 median=43.6 avg=52.8 max=140.9 ms`. The tail is real, not
+noise — single trials land anywhere from one delivery period to ~140 ms, so
+quote the median and report n.
 
 ## Noise floor
 

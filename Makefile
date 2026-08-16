@@ -6,12 +6,15 @@
 NVFBC_INC ?= ../x11vnc/src/nvfbc
 CFLAGS    ?= -O2 -Wall
 
-BINS = loadgen nvfloor diffcheck pollmode
+BINS = loadgen nvfloor diffcheck pollmode keytarget
 
 all: $(BINS)
 
 loadgen: loadgen.c
 	$(CC) $(CFLAGS) -o $@ $< -lX11 -lXext
+
+keytarget: keytarget.c
+	$(CC) $(CFLAGS) -o $@ $< -lX11
 
 nvfloor: nvfloor.c
 	$(CC) $(CFLAGS) -I$(NVFBC_INC) -o $@ $< -ldl
