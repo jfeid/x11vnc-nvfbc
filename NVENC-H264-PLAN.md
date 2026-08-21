@@ -826,3 +826,632 @@ Stop changing the server. Get TigerVNC's own log from the Windows side
 (`-Log *:stderr:100`) and find out what the client thinks is happening, because
 three server-side theories in a row have now been wrong and the server-side
 evidence is exhausted.
+
+
+## 18. Freeze diagnosed and fenced (2026-08-21)
+
+> **SUPERSEDED BY §20.** The mechanism proposed here - the viewer's socket loop
+> never returning to its event pump - is **refuted**: the client acknowledges
+> every frame within 500 ms throughout the freeze, which it can only do by
+> exiting that loop. The fence *transport* described below is correct and
+> retained; the *diagnosis* is wrong.
+
+Read the client. TigerVNC **v1.16.2** source (tag `b555312`, not master) refutes
+§17's buffer-exhaustion hypothesis and points at a different mechanism, and the
+fix is RFB fence flow control implemented inside the fork.
+
+### §17's hypothesis is wrong
+
+- **`producerCond.wait()` on buffer exhaustion cannot happen here.**
+  `framebufferUpdateEnd()` calls `decoder.flush()`, which blocks the reader
+  until the decode queue drains. With one full-screen H.264 rect per
+  FramebufferUpdate (§3), at most **one** decode buffer is ever in flight, so
+  `freeBuffers` (8 of them: 2 × min(4,cores)) never empties. The plan reasoned
+  about a single ordered worker but missed the per-update flush barrier in
+  front of it.
+- **Socket reads never block the UI thread either.** `FdInStream::readFd` does a
+  `select()` with a **zero timeout**; a partial rect just makes `processMsg()`
+  return false.
+
+### What actually starves it
+
+The viewer's socket handler `CConn::socketEvent` is **single-threaded** (the
+FLTK main thread) and runs `while (processMsg())`, and it **corks the client's
+output stream** for the whole loop (`cork(true)` before, `cork(false)` only
+after it exits). Queued input events and the update-request/fence echoes sit in
+that corked buffer. A server that keeps the socket continuously fed with
+back-to-back full-frame updates keeps the loop from ever returning to FLTK's
+event pump — so the picture stops advancing **and** input stops being sent,
+clearing the instant motion stops and the socket drains. Matches the symptom.
+
+Fix #3 (pace on `requestedRegion`) could not prevent it: **libvncserver 0.9.15
+has no continuous-update and no fence support** (`nm`/headers confirm), so the
+client is classical request-driven but pipelines requests **one deep** — it asks
+for frame N+1 at the *start* of reading frame N — which keeps the server exactly
+one frame ahead, and one frame ahead is enough to keep the loop perpetually fed.
+
+### The fix: RFB fence flow control (in the fork)
+
+`src/h264/h264_stream.c`: after each H.264 frame, send a `ServerFence`
+(msg 248, `fenceFlagRequest`) and **withhold that client's next frame until it
+echoes** — the one acknowledgement that survives sshd and proves the client's
+loop drained the frame and came back. That forces the socket to run dry each
+round, so the viewer returns to its event pump every frame, and it self-adapts
+the rate to the client's true throughput (the adaptive rate §17 asked for).
+
+Feasible entirely in the fork, all verified against LibVNCServer-0.9.15 +
+TigerVNC v1.16.2 source:
+
+- The viewer advertises `pseudoEncodingFence` (-312), so our
+  `enablePseudoEncoding` learns which clients can be fenced.
+- libvncserver routes the unknown `ClientFence` (msg 248) to our extension's
+  `handleMessage` (only the type byte is pre-read; we read the rest and return
+  TRUE, else the library would close the client).
+- Fences ride the send ban and the same socket, in order, exactly like the
+  H.264 rects.
+- A **timeout** (`-h264_fence_timeout`, default 500 ms) degrades a lost echo to
+  send-anyway, so a dropped fence can never freeze the stream the other way.
+- The tick **holds** before encoding while gated rather than encode-and-drop, so
+  the stream stays clean P-frames (one per ack) instead of an all-IDR storm.
+
+New knobs: `-h264_nofence`, `-h264_fence_timeout N`, and remote-control
+`h264_fence:0|1` / `h264_fence_timeout:N` for live A/B without a restart.
+
+### Validated, and what is still open
+
+Validated on a throwaway port 5906 (test-file replay, X11 capture, production on
+5900 untouched) with `bench/rfbcheck.py --h264 --fence` (new `--fence` echoes
+msg 248; `RFBCHECK_FENCE_NOECHO=1` withholds echoes):
+
+- ungated the server floods at **~94 rects/s**; with fences echoed it sends
+  **exactly one frame per echo** (e.g. 101/101, 98/98) and never runs ahead;
+- with echoes withheld it floors at the **timeout rate ~2/s** and does not
+  freeze;
+- no desync, no client close, stream valid throughout.
+
+Still open — because `rfbcheck` is a synchronous consumer it cannot reproduce
+the single-threaded-viewer freeze, so this proves the **pacing is correct**, not
+that it **cures the freeze**. Confirm that on the real client:
+
+1. Live test on **5906** (not 5900) with `-h264`, the real Windows TigerVNC, and
+   real motion — watch for the freeze and dump the stream with
+   `rfbcheck.py --h264 --dump-h264` to confirm P-frame-dominant, few IDRs.
+2. If anything still stalls, capture the client's own view at last:
+   `vncviewer ... -Log '*:stderr:100'` on Windows (§17's mandated step).
+3. Deploy to 5900 only after 1–2 look right (README install one-liner).
+
+### Live-encoder validation, and one follow-up it exposed (2026-08-21)
+
+The §18 numbers above were the test-file path. Repeated against the **live
+NVENC path** via `bench/h264-testserver.sh` (port 5906, `ENTER=0.05` so a small
+320x240 load trips the gate while staying at ~1.25 screens/s - far below
+production's 8, so the operator's 5900 session stayed on Tight throughout):
+
+| consumer | AUs | fences | IDR share |
+|---|---|---|---|
+| `--slow 40` (≈25 fps ceiling) | 101 | 100 echoed, 1:1 | **16%** |
+| no `--slow` (fast) | 116 | 115 echoed, 1:1 | **2%** |
+
+All 101 access units of the slow run decode with **zero complaints** (Main
+profile, 2560x1440), and ffprobe's frame types match the wire flags exactly -
+85 P to 16 I. So fence pacing preserves inter-frame prediction; it does not
+degrade into an IDR storm.
+
+**Follow-up (not changed yet, deliberately).** The IDR share tracks consumer
+speed, which locates it in the *request* check from §17 fix 3, not in fencing:
+when the tick outruns the consumer's requests, `h264_broadcast` finds
+`requestedRegion` empty, refuses **after** the frame was already encoded, and
+`need_idr` then forces the next delivered frame to be a full IDR (~350 KB vs an
+84 KB median P). The clean repair is the same shape as the fence fix - extend
+the hold to *before* the encode, so a frame is never produced for a client that
+cannot take it. It is left out of this change on purpose: the live client test
+should vary one thing at a time, and TigerVNC pipelines its requests one deep,
+so a real viewer should hit this far less often than a strictly synchronous
+`rfbcheck --slow` does. Measure it on the real client before acting.
+
+### `bench/h264-testserver.sh` gotchas, now handled
+
+The first version resolved `../x11vnc/src/x11vnc` against the **caller's** cwd,
+so it only ran from inside `bench/` and died with "No such file or directory"
+when invoked as `bench/h264-testserver.sh`. It now resolves against its own
+directory and preflights: refuses port 5900 outright, reports a missing binary
+with the build command, refuses a port already in use, and checks the display
+is openable before launching. `NOFENCE=1` runs the unpaced "before" leg and
+`ENTER=N` overrides the gate threshold, so both legs of the A/B are command-line
+choices - **do not use `-R` for this while production is up**, since remote
+control goes through one `X11VNC_REMOTE` property and needs exactly one server.
+
+### The `medium` scenario sits on the threshold, and the test rig must use NVFBC (2026-08-21)
+
+Two things that make or break a reproduction of §17, both found by trying:
+
+**1. Capture method decides whether the gate can trip at all.** The gate's metric
+is dirty area per second, which scales with how often the server scans. Under
+X11 capture the scan rate is low and damage coalesces - one dirty region per
+scan instead of 60/s - so `medium` measures far below 8 screens/s, H.264 never
+engages, and the bench silently runs pure Tight. A full `measure.py` run against
+such a server reported no freeze and meant nothing: the picture kept updating
+(90 KB/s, Send-Q 0, client never dropped) simply because it was Tight all along.
+The test server needs `NVFBC=1` (i.e. `-nvfbc -nvfbc_nocursor -nvfbc_push`).
+
+A second NVFBC session **does** work alongside the live server's: the throwaway
+initialises fine and tracks the same output DP-4. That is consistent with
+`bench/nvfloor`, which has always opened one next to a running x11vnc. §14's
+"two sessions are refused" applies within a single NvFBC client handle, not
+across processes.
+
+**2. `medium` is a knife-edge case for `-h264_enter 8`.** 960x540 is 0.1406 of
+2560x1440, so the measured rate is 0.1406 x the achieved capture fps:
+
+| achieved fps | measured rate | vs threshold 8 |
+|---|---|---|
+| 60 (the original freeze runs, logged 8.1) | 8.44 | trips |
+| 53 (measured here) | 7.45 | **does not trip** |
+
+So whether `medium` exercises H.264 at all depends on a few fps of capture rate.
+This is §15's raised threshold behaving exactly as designed - it was moved to 8
+specifically so quarter-screen video would stay on Tight - but it makes `medium`
+an unreliable reproduction. Use `full` (2560x1440 = 1.0 screens/frame, 20-30
+screens/s, unambiguously above the threshold) as the load that guarantees
+sustained H.264, and read `medium` as a maybe.
+
+## 19. The fence fix holds under the failing load (2026-08-21)
+
+> **WRONG - SEE §20.** The operator was not watching this run. When observed,
+> the viewer froze in the identical pattern. The "liveness" argument below is
+> invalid: inbound bytes do not prove the client's loop ran (see §20).
+
+`measure.py --port 5906` against the fenced build, NVFBC push, real TigerVNC
+1.16.2 over the real tunnel. The gate entered H.264 **5 s into `medium`** and
+held for **61 s** through all of `full`, exiting at 22:48:21 - i.e. §17's exact
+failure window ("a few seconds into medium ... recovers ~60 s later"),
+reproduced deliberately.
+
+| scenario | pre-fence (5900, 21:03) | fenced (5906) | CPU pre → now |
+|---|---|---|---|
+| medium | 1559.8 KB/s | **975.7 KB/s (-37%)** | 43.7 → 41.5 |
+| full | 1236.8 KB/s | **996.0 KB/s (-19%)** | 85.2 → 91.9 |
+
+Fewer bytes for the same load, with CPU headroom to spare at `medium` (41.5%),
+is what pacing to the consumer looks like. (`idle`/`small` bytes are up, but
+those legs are Tight-only and the desktop was not quiescent - this session's own
+terminal output was live damage. Do not read them as a regression.)
+
+### The echo rate measures the client's event loop, from the server
+
+The freeze was never visible in bytes-sent, because bytes left x11vnc during the
+freeze too. But fences give a signal that bytes cannot: **TigerVNC writes its
+fence echo into a corked output stream** that only flushes when `socketEvent`'s
+`while (processMsg())` loop exits (§18). An echo arriving is therefore proof
+that the viewer returned to its event pump - the precise thing a freeze
+prevents.
+
+Measured over 8 s of sustained full-screen H.264:
+
+```
+server -> viewer : 1028 KB/s
+viewer -> server :  290 B/s   = ~12.6 round-trips/s   (13 B echo + 10 B request)
+                                 1028 KB/s / 84 KB    = ~12.2 frames/s
+```
+
+Two independent numbers agreeing, and both incompatible with a stalled loop: a
+client that never uncorks never echoes, so the server would be pinned to the
+500 ms timeout - 2 fps, ~170 KB/s. Sustaining 1028 KB/s at 2 fps would need
+514 KB access units, above the 350 KB maximum §17 ever recorded. The server was
+running on echoes, not timeouts, and the viewer was alive throughout the load
+that froze it 4/4.
+
+**Still worth having:** the operator's own visual confirmation, and a run with
+`NOFENCE=1` to show the freeze returning on the same rig - a negative control
+this evidence does not replace.
+
+### Second run, operator watching (2026-08-21)
+
+Repeated because the first run went unobserved. Same rig, same protocol; the
+gate entered at **8.1 screens/s** - the identical figure §17's freeze logged -
+5 s into `medium` (22:55:14) and held **62 s** through `full` (exit 22:56:16).
+
+| | run 1 | run 2 |
+|---|---|---|
+| medium | 975.7 KB/s, 41.5% | 954.1 KB/s, 40.9% |
+| full | 996.0 KB/s, 91.9% | 997.6 KB/s, 92.6% |
+| liveness during H.264 | 1028 KB/s out, 290 B/s in, ~12.6 rt/s | 1038 KB/s out, 290 B/s in, ~12 rt/s |
+
+Reproducible to within 2%. No `backed up`, no fallback, no disconnect in either
+run, and the viewer's echo round-trip rate held at ~12/s throughout - the loop
+kept returning to its event pump under exactly the load that froze it 4/4.
+
+## 20. Fences are not the cure either - and the client is not stalled (2026-08-21)
+
+Observed by the operator, twice, with the same result each time: the viewer
+freezes a few seconds into `medium` and recovers when the gate hands back to
+Tight, exactly as §17 described. **Fence flow control does not fix it.** That is
+theory number five.
+
+### Two of my own claims, corrected
+
+**1. Inbound bytes never proved the client was alive.** §19 argued that fence
+echoes only flush when TigerVNC's socket loop exits and uncorks, so ~12
+round-trips/s meant a live event loop. Wrong: `BufferedOutStream::flush()`
+returns early **only while under 1024 bytes are buffered**
+
+```c
+if (corked && emulateCork && ((ptr - sentUpTo) < 1024))
+    return;
+```
+
+so a corked stream still writes once ~1 KB accumulates, loop or no loop. The
+conclusion was built on an unchecked premise and happened to be measuring an
+artifact.
+
+**2. Client saturation is refuted.** The theory: the fence paces the server to
+the client's completion rate, driving it at 100% duty cycle with nothing left
+for rendering or input. Tested by dropping `-h264_fps` 30 -> 5, roughly 40% of
+measured capacity. **It froze identically.**
+
+### The counted evidence, which is what makes this useful
+
+The build now logs delivery counters (`h264 stats:`) rather than inferring rates
+from bytes divided by an assumed access-unit size. Through the entire frozen
+minute at 5 fps:
+
+```
+h264 stats: 4.7 fps sent, 2.2 MB/s, 47 echoes, 0 timeouts, 1 held, 0 unrequested
+```
+
+- **Frames sent and echoes match 1:1, with zero fence timeouts**, continuously,
+  while the screen was frozen and input dead.
+- At 4.7 fps the client must **exit** its `processMsg` loop between frames -
+  there is nothing left to read for ~200 ms - which uncorks and flushes. Prompt
+  echoes are therefore proof the loop *is* cycling.
+- Holds fell to 1-3 per 10 s: the server was almost never waiting on the client.
+
+**So the client's protocol layer is healthy and responsive throughout a freeze
+in which it displays nothing and accepts no input.** Whatever is broken is
+downstream of message processing - the decode/render path - not the socket loop
+(§18) and not overall throughput (this section).
+
+That is consistent with §1's warning, which is worth re-reading now: encoding 50
+has **no diagnostics**, `ProcessInput`/`ProcessOutput` failures in
+`H264WinDecoderContext` are swallowed on purpose ("Silently ignore errors,
+hoping its a temporary encoding glitch"), and a decoder that stops producing
+output renders a frozen or black rectangle while the protocol layer looks
+perfect. §17's "the stream is VALID" was established with **ffmpeg offline**,
+never with Media Foundation on Windows, which is the decoder that matters and
+the one with the documented silent-failure modes.
+
+Note also what varies with the frame rate: rate control is CBR at 20 Mbps, so
+5 fps produced **~480 KB** access units against ~83 KB at 30 fps. Frame *size*,
+not frame rate, is the thing that grew - and it froze at both.
+
+### Do not change the server again until the client has been read
+
+§17 set this rule after three failed theories; there are now five, two of them
+mine. The next step is not another server-side patch. It is the viewer's own
+log, which no theory so far has had:
+
+```
+vncviewer.exe -Log *:file:100 ...        # writes C:\temp\vncviewer.log
+```
+
+(`vncviewer.cxx:658` registers the Windows file logger at that fixed path;
+`*:stderr:100` is useless for a Windows GUI build.) Reproduce the freeze with it
+running and read what the client says about `H264` / `DecodeManager` /
+`CConnection` during the frozen minute.
+
+A zero-cost server-side companion measurement, needing no rebuild: during the
+freeze, mash keys and watch inbound bytes on the client socket. Baseline traffic
+is ~23 B per frame (13 B fence echo + 10 B update request); key events on top of
+that prove the input path is live and localise the fault to display only.
+
+### What the fence work is still worth
+
+It is not wasted, but it must be described accurately: correct RFB flow control
+that libvncserver 0.9.15 cannot do (it has neither fences nor continuous
+updates), a 39% bandwidth reduction at `medium` for identical load, and - now
+that it counts acks - **the instrument that measures what the client actually
+consumes**. It is a good mechanism and the wrong cure. Keep it behind
+`-h264_nofence`; do not present it as the fix.
+
+### Input reaches the server throughout the freeze (2026-08-21)
+
+Measured with no server change at all: inbound bytes on the client socket, in
+5 s buckets, while the operator wiggled the mouse during the frozen window.
+Idle baseline is ~107 B/s (update requests plus fence echoes).
+
+```
+t+  5s   109 B/s          gate has just entered H.264
+t+ 10s   284 B/s   <-- mouse
+t+ 15s   268 B/s   <-- mouse
+t+ 20s   270 B/s   <-- mouse
+t+ 25s   225 B/s   <-- mouse
+t+ 30s   242 B/s   <-- mouse
+...
+t+ 60s   254 B/s   <-- mouse
+t+ 65s   226 B/s   <-- mouse
+```
+
+Pointer events are 6 bytes each, and they arrive in a steady stream 2-3x above
+baseline **during the minute the screen is frozen**. Server-side over the same
+window: `4.8 fps sent, 47 echoes, 0 timeouts` in five of seven intervals.
+
+So during a "freeze" the viewer is:
+
+- **reading** our H.264 frames and acknowledging every one within 500 ms,
+- **reading the mouse** and writing pointer events to the socket,
+- **flushing** that output on schedule,
+- and **displaying nothing**.
+
+Message loop, input handling and socket writing are all alive. The operator's
+"input stops responding" is the *appearance* of dead input caused by a dead
+display: the pointer really does move on the X server and the desktop really
+does respond - the client simply never paints the result. Nothing about this is
+compatible with a stalled client, a starved event loop, or a throughput limit.
+
+**The fault is isolated to the client's H.264 display path.** Which is precisely
+where §1 warns there are no diagnostics and where `H264WinDecoderContext`
+swallows `ProcessInput`/`ProcessOutput` failures by design.
+
+One anomaly worth keeping: the interval covering the `medium` -> `full`
+transition read `3.6 fps sent, 31 echoes, 5 timeouts, 115 held` - the only
+interval with timeouts, i.e. the client briefly stopped acking when the whole
+screen started changing. Everything else was clean.
+
+### The client's H.264 path has no logging at all (2026-08-21)
+
+Checked before reading any client log, so expectations are right: **not one
+`LogWriter` exists in any H.264 file** of TigerVNC 1.16.2 -
+`H264Decoder.cxx`, `H264DecoderContext.cxx`, `H264WinDecoderContext.cxx`,
+`H264LibavDecoderContext.cxx`. The only outputs are `throw`s during *context
+construction* (MF init failure, codec not found); once running, `decode()` logs
+nothing and swallows every `ProcessInput`/`ProcessOutput` failure by design.
+
+So `-Log *:file:100` **cannot** produce an H.264 decode error, however verbose.
+Its value is what it rules out - a decoder exception, a reconnect, a mid-stream
+pixel-format or encoding change, repeated decoder construction - plus whatever
+`CConnection` and `DecodeManager` say. If it is silent through the freeze, that
+is itself a result: it eliminates every failure mode the client can report and
+leaves only the one it cannot.
+
+Practical note: the Windows file logger writes to a **hardcoded**
+`C:\temp\vncviewer.log` (`vncviewer.cxx:658`) and `Logger_File::write()` opens it
+lazily with `fopen(...); if (!m_file) return;` - so if `C:\temp` does not exist,
+which is the Windows default, logging fails **silently**. Create the directory
+first. The file is also rotated to `.bak` on every viewer start, so capture the
+log before reconnecting.
+
+## 21. Two real encoder defects, found on the wire (2026-08-21)
+
+The client log (level 100, `C:\temp\vncviewer.log`) was **silent through the
+entire frozen minute** - no exception, no reconnect, no format change, no
+decoder re-creation. As §20 predicted, it cannot report an H.264 fault. But its
+closing stats were decisive:
+
+```
+DecodeManager: H.264: 288 rects, 1,06168 Gpixels, 136,426 MiB
+```
+
+288 x 2560x1440 = 1.0617 Gpixels exactly, and the server sent ~287 frames. **The
+client received, queued and counted every single frame** and painted none of
+them. A screenshot taken mid-freeze shows TigerVNC's own stats overlay reading
+`3 upd/s, 6.14 Mpix/s, 15.97 Mbps` with a regular sawtooth - and the overlay was
+*animating*, so FLTK's draw cycle was running. Data in, decode counted, window
+redrawing, desktop image static.
+
+That isolates the fault to `H264WinDecoderContext::decode()` never reaching
+`pb->imageRect()` - i.e. `decoded` never becoming true. Dumping the live stream
+found why.
+
+### Defect 1: the frame that resets the decoder is not an IDR
+
+`h264_enc_frame()` requests a keyframe with `pict_type = AV_PICTURE_TYPE_I`, but
+**`h264_nvenc` defaults `forced-idr` to false**, so that request yields a plain
+I slice. Confirmed by dumping the real stream (`rfbcheck --dump-h264`) and
+parsing NAL types:
+
+```
+AU  1  500051 B  flags=1   SPS+PPS+I-slice(NON-IDR)   <== RESET_CONTEXT
+AU  2..11        flags=0   SPS+PPS+P
+AU 12            flags=0   SPS+PPS+IDR                (GOP boundary)
+```
+
+`H264_RESET_CONTEXT` makes `H264Decoder::decodeRect` **destroy the decoder
+context and construct a new one**. A fresh H.264 decoder cannot start on a
+non-IDR picture: Media Foundation returns `MF_E_TRANSFORM_NEED_MORE_INPUT`,
+`decoded` stays false, `imageRect()` is never called, and the viewer paints
+nothing - silently, with no diagnostic, exactly the §1 failure mode. It stays
+stuck until the next GOP IDR, which at `gop_size = fps * 10` was **10 seconds**
+away, and any further refusal re-arms `need_idr` and resets it again.
+
+Fix: `av_opt_set(ctx->priv_data, "forced-idr", "1", 0)`, plus `gop_size` cut
+from `fps*10` to `fps*2` so a missed start costs 2 s rather than 10.
+
+**Scope, stated honestly:** this bites whenever the gate enters H.264 with the
+encoder *already open*. It does **not** explain the observed 23:30 freeze, where
+the log shows the encoder was opened fresh at entry and a fresh encoder's first
+frame is an IDR regardless. So this is a genuine, verified defect and a
+guaranteed silent-freeze mechanism - but not proof that the freeze is cured.
+
+### Defect 2: strict CBR pads every frame with filler
+
+Same dump, counting NAL type 12:
+
+```
+AU 1 (500,051 B):  slice  19,474 B  +  FILLER 480,507 B  (96.1%)
+AU 2 (500,051 B):  slice 305,745 B  +  FILLER 194,236 B  (38.8%)
+AU 3 (500,051 B):  slice 247,432 B  +  FILLER 252,549 B  (50.5%)
+```
+
+Every access unit was a constant 500,051 bytes - exactly 20 Mbps / 5 fps - with
+the remainder filler. `rc=cbr` makes NVENC transmit padding to hold the bitrate
+whatever the content. That is why lowering `-h264_fps` *raised* bandwidth, and
+it defeats §0's entire bandwidth motivation on a 9.9 Mbps uplink.
+
+Fix: `rc=vbr` with the same `rc_max_rate` ceiling.
+
+### Verified after both fixes
+
+Same test, two gate entries:
+
+| | before | after |
+|---|---|---|
+| RESET_CONTEXT frame, entry 1 | `I-slice(NON-IDR)` | **IDR** |
+| RESET_CONTEXT frame, entry 2 | `I-slice(NON-IDR)` | **IDR** |
+| filler | 39-96% per AU | **0.0%** (0 of 1,715,229 B) |
+| mean access unit | 500,051 B | **34,304 B** |
+| static-screen frames | 500,000 B | **316-484 B** |
+
+A 14.6x drop in mean frame size, and a motionless screen now costs ~320 bytes a
+frame instead of half a megabyte.
+
+### Method note worth keeping
+
+§17 declared "the stream is VALID" because 640 access units decoded cleanly in
+**ffmpeg**. ffmpeg happily starts on a non-IDR I-frame; Media Foundation does
+not. Validating a stream with a lenient decoder says nothing about a strict one.
+Check the **structure** - is the frame that follows a context reset actually an
+IDR - not merely whether some decoder accepts it.
+
+## 22. ROOT CAUSE: the client cannot display 2560x1440 H.264 at all (2026-08-22)
+
+Not a freeze. Not load. Not pacing, not fences, not capture, not the gate.
+**The viewer never paints a 2560x1440 H.264 rect, at any rate, from any server.**
+
+### How it was isolated
+
+`bench/h264serve.py` serves a pre-encoded Annex-B file as encoding 50 - no
+x11vnc, no gate, no live encoder, no fences, no Tight. Serving 90 s of
+2560x1440 to the real client:
+
+```
+sent 681 frames ... ended: client closed the connection
+```
+
+681 frames delivered and consumed, and the screen stayed **black the whole
+time**. The access units were structurally perfect - `00 00 00 01 67` (4-byte
+start code, NAL type 7) then SPS+PPS+SEI+SEI+IDR, exactly what §1 requires.
+
+Then a resolution sweep, same tool, same wire format:
+
+| size | pixels | encoder | result |
+|---|---|---|---|
+| 1280x720 | 0.92 Mpx | NVENC | plays |
+| 1600x1200 | 1.92 Mpx | NVENC | plays |
+| 1920x1080 | 2.07 Mpx | NVENC | plays |
+| 2048x1152 | 2.36 Mpx | NVENC | plays |
+| **2560x1440** | **3.69 Mpx** | **NVENC** | **BLACK** |
+| **2560x1440** | **3.69 Mpx** | **libx264** | **BLACK** |
+
+Two independent encoders produce the same black screen at 2560x1440, and
+everything at or below 2048x1152 plays. The ceiling is in the **client**.
+
+### What this reinterprets
+
+Every earlier observation now reads differently, and consistently:
+
+- The "freeze" was never a freeze. H.264 was painting **nothing at all**, from
+  the first frame of every gate entry. What looked like a frozen desktop was the
+  last **Tight** frame, left on screen because §11's design suppresses Tight
+  while H.264 owns the output.
+- "Recovery ~60 s later, exactly when the gate returns to Tight" - because the
+  gate exit calls `mark_rect_as_modified()` for the whole screen. Nothing
+  recovers; Tight simply paints over the stale image. The operator asked what
+  brings the encoder back to life, and the answer is that nothing does.
+- The client acknowledging every frame, counting all 288 rects, keeping its
+  event loop alive and its input path working: all consistent. It received and
+  parsed everything perfectly. It just could not display it.
+- "Only under sustained full-screen change" - sustained motion is merely what
+  holds the gate in H.264 long enough to notice. Brief excursions (a scroll)
+  ended before the missing paint was obvious, which is why §13's interactive
+  testing passed.
+
+### What was NOT the cause (seven refuted theories)
+
+Socket-backlog guard; write-fit check; RFB request pacing; DecodeManager buffer
+exhaustion; socket-loop starvation; fence pacing; client saturation. Two of
+those were mine, and I called the fence fix "validated" against a run nobody
+watched - it was overturned the moment the operator looked at the screen.
+
+### Still worth keeping from the wrong turns
+
+- **forced-idr** (§21): `h264_nvenc` defaults it false, so the access unit
+  carrying `H264_RESET_CONTEXT` was a non-IDR I-slice. Real defect, fixed.
+- **VBR instead of CBR** (§21): strict CBR padded every frame to the bitrate
+  with filler NALs - 96%/39%/50% measured. Mean AU 500,051 B -> 34,304 B, and a
+  static screen 500,000 B -> ~320 B per frame. Real defect, fixed.
+- **Fence flow control** (§18): correct RFB flow control the stock library
+  cannot do, -39% bandwidth, and the counters that finally replaced inference
+  with measurement. Not the cure; keep behind `-h264_nofence`.
+- **Delivery counters**: added because rates derived from bytes / assumed frame
+  size produced a confidently wrong conclusion. Count events, do not derive them.
+
+### Method lessons
+
+1. **§17's "the stream is VALID" was tested with ffmpeg.** ffmpeg is lenient;
+   Media Foundation is not, and it reports nothing. Validate structure against
+   the strict decoder's rules, and validate end-to-end against the real client.
+2. **Remove your own code from the experiment early.** `h264serve.py` existed
+   since Phase 0 and would have isolated this in minutes at any point.
+3. **A measurement that agrees with your theory is not evidence until you have
+   checked what else could produce it.** Inbound fence bytes "proved" liveness;
+   they were a 1 KB buffer flushing on its own schedule.
+
+## 23. FIXED: tiled H.264 (2026-08-22)
+
+Confirmed by the operator on the real client: **the picture plays through both
+gate entries**, tracking the load instead of freezing. Same bench, same
+`medium`+`full` scenarios, same rig that froze 4/4 for the previous week.
+
+### The change
+
+`h264_encode.{c,h}` becomes multi-instance (`h264_enc_t *`, one per tile), and
+`h264_stream.c` splits the served region into as few horizontal bands as keep
+each under `H264_MAX_TILE_PIXELS`, giving each its own encoder, its own IDR
+chain and its own rect. All bands go out in **one FramebufferUpdate** with
+`nRects = ntiles`.
+
+For 2560x1440 that is 2 tiles of 2560x720. Verified on the wire:
+
+```
+AU   bytes flags       rect  layout
+ 1    9488     1   2560x720  SPS(2560, 720)+PPS+SEI+SEI+IDR
+ 2    9350     1   2560x720  SPS(2560, 720)+PPS+SEI+SEI+IDR
+ 3   11190     0   2560x720  SPS(2560, 720)+PPS+SEI+P
+ 4   11165     0   2560x720  SPS(2560, 720)+PPS+SEI+P
+```
+
+Bands, not columns, because framebuffer rows are contiguous: each encoder is
+pointed at `screen->frameBuffer + y * stride` with the existing stride, so the
+zero-copy property of the single-rect path is preserved. Tile count is derived
+from the geometry, so a `-clip` change or a different screen adapts by itself,
+and band height is rounded up to a multiple of 16 to keep every tile a whole
+number of macroblock rows and avoid SPS frame-cropping entirely.
+
+### Measured, tiled build
+
+| scenario | KB/s | CPU |
+|---|---|---|
+| medium | 299.5 | 37.0% |
+| full | 155.9 | **122.0%** |
+
+Delivery through both entries: `4.7-4.8 fps sent, 47-49 echoes, 0 timeouts`.
+
+**CPU is the cost of this fix and should not be glossed over:** `full` went from
+~90% to 122% because there are now two NVENC sessions instead of one, each with
+its own submission and its own host->device path. Worth measuring against
+`-h264_fps 30` and a preset sweep (§8 Phase 4) before deploying, and worth
+remembering that a screen needing 3 or 4 tiles pays proportionally more.
+
+### The limit is the client's, and it is not ours to tune
+
+`H264_MAX_TILE_PIXELS` is exposed as `-h264_tile_pixels` for experimentation,
+but it is **not a tuning knob** - it is a measured property of TigerVNC's
+Windows decoder (§22). A different viewer, or a TigerVNC built against a
+different Media Foundation, may sit elsewhere. The honest position: we tile to
+2,359,296 px because that is what this client was measured to accept, and any
+client whose limit is lower will show the same silent black rect with no way for
+the server to detect it.
+
+That is the deeper problem with encoding 50 and it is unchanged by this fix:
+**the protocol gives the server no way to learn that the client failed to
+display a rect.** Everything in §17-§22 followed from that single gap.
