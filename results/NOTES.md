@@ -8,6 +8,11 @@
 > NVFBC remains in the tree for the cases where it wins (no shm available,
 > XDamage-broken environments, fullscreen video). Read that before quoting any
 > of the numbers below as "NVFBC is faster".
+>
+> **Superseded 2026-08-19:** the deployed service is on NVFBC again, now with
+> `-nvfbc_push` and no `-wait`/`-defer`:
+> `-nvfbc -nvfbc_nocursor -nvfbc_push -repeat -threads -clip 2560x1440+0+0 -xkb`.
+> Why it was switched back is not recorded here.
 
 
 All on the same machine: RTX 3060, driver 550.163.01, X screen 4480x1440 across
@@ -114,3 +119,108 @@ Verdict: the 14 ms median and 184->67 ms tail from 2/2 are real, but paid for
 with a doubling of idle CPU on the box the user is also working on. Not
 recommended as a blanket production setting on this evidence. The unmeasured
 middle (5/5) is the obvious next candidate.
+
+
+## Client Tight settings: compression and JPEG quality (2026-08-19)
+
+The *client* picks compression level and JPEG quality in SetEncodings and the
+server obeys. They drive encode cost and delivered bytes directly, and until
+this date no result set recorded them. `measure.py` now captures them from the
+server log into `context.client_encoding`, so a run can no longer be ambiguous
+about which settings produced it.
+
+### Three files here are invalid - do not quote them
+
+| file | why |
+|---|---|
+| `tight-c2q8-20260819-180005.json` | cell load. `loadgen`'s default `XFillRectangle` cells encode as Tight fills/palettes and never reach libjpeg, so a JPEG quality change moves nothing. The ~400:1 compression ratio is the tell. Needs `--blit`. |
+| `blit-c2q8-20260819-181000.json` | blit load, but measured against the live service: the user's desktop was in use, and the only client was a real viewer behind an SSH tunnel and a VDSL link. Both uncontrolled, both larger effects than the setting. |
+| `blit-c6q9-20260819-182459.json` | same. Produced 6/9 using **23% less** CPU than 2/8, which an encoder cannot do. Explained by the link capping delivery: fewer bytes out, so less CPU spent producing them. |
+
+### The controlled result
+
+`encoding-ab.sh`: private x11vnc on a throwaway port, one local
+`rfbcheck.py --tight` client, load we generate, A/B/A ordering.
+
+| leg | cpu% | MB/s | rects/s | jpeg% |
+|---|---|---|---|---|
+| 2:8 (A1) | 57.9 | 12.09 | 514.6 | 80.1 |
+| 6:9 (B) | 61.6 | 20.44 | 352.3 | 92.8 |
+| 2:8 (A2) | 55.9 | 12.26 | 460.0 | 84.3 |
+
+The A legs reproduce within 3.5% CPU and 1.4% bytes - inside the +/-3-8% noise
+floor - so the B delta is attributable.
+
+**compression 6 / quality 9 against 2 / 8: +8.3% CPU, +67.9% bytes.**
+
+The CPU effect is marginal, barely clear of noise. The bandwidth effect is
+large. Going to 2/8 cuts wire bytes by 40% for an ~8% CPU saving. This server is
+reached over an 82/9.9 Mbps VDSL link, where fullscreen Tight already wants
+~65 Mbps, so 40% fewer bytes is the difference between saturating the
+downstream and having room in it. **Rank these settings by bandwidth, not CPU** -
+an earlier version of this analysis had it backwards.
+
+`jpeg%` shows the mechanism: at quality 9 the encoder sends 92.8% of rects as
+JPEG rather than palette, up from 80.1%, and each costs more bytes.
+
+### How to measure them
+
+Do not use `measure.py` against the running service for encoder questions. The
+live desktop and the transport to the real client each move server CPU by more
+than the setting under test. `encoding-ab.sh` removes both.
+
+`rfbcheck.py --tight --stream` prints a sub-encoding breakdown
+(`fill`/`palette`/`jpeg`/`copy`/`gradient`). Check it before trusting any
+JPEG-related number: if `jpeg%` is low, the load is not exercising the path
+under test, and that is how the first attempt above went wrong.
+
+
+### JPEG quality sweep (2026-08-19)
+
+`./encoding-ab.sh 2:6 2:7 2:8 2:9 2:6`, compression pinned at 2, first leg
+repeated last as a drift bracket. `jpeg%` 98-99.5 throughout, so this is the
+JPEG path and nothing else.
+
+| quality | cpu% | MB/s | vs q8 | updates/s |
+|---|---|---|---|---|
+| 6 (A1) | 59.4 | 8.72 | | 41.5 |
+| 7 | 61.1 | 9.96 | -14.5% | 39.5 |
+| 8 | 61.7 | 11.65 | - | 39.1 |
+| 9 | 65.5 | 19.08 | +63.8% | 35.1 |
+| 6 (A2) | 59.9 | 8.49 | -26.1% | 40.6 |
+
+The 2:6 legs reproduce within 0.8% CPU and 2.7% bytes, so the sweep holds.
+
+**Quality 9 is a cliff, not a step.** 6->7->8 each cost ~16% more bytes; 8->9
+costs 64%. That is libjpeg's top-of-scale behaviour - the last increment is
+priced absurdly. Never run quality 9 on a bandwidth-constrained link.
+
+CPU moves 59.4 -> 65.5 across the whole sweep, most steps inside noise. These
+settings are a bandwidth knob, not a CPU knob.
+
+Caveat on picking a floor: `loadgen -blit` draws a synthetic gradient. It
+exercises libjpeg correctly, so the byte figures are sound, but it says nothing
+about what low quality does to antialiased text - the content most sensitive to
+JPEG quantisation. The numbers argue for going lower; the floor is a subjective
+call against a real desktop.
+
+
+### Tight JPEG chroma subsampling by quality level (2026-08-20)
+
+Dumped real Tight JPEG payloads with `rfbcheck.py --dump-jpeg` and read their
+sampling factors. This is invisible from the protocol and changes the meaning of
+the quality knob:
+
+| quality | sampling-factor | |
+|---|---|---|
+| 3, 5 | `2x1,1x1,1x1` | 4:2:2 - half chroma horizontally |
+| 6, 7, 8, 9 | `1x1,1x1,1x1` | **4:4:4 - no chroma loss** |
+
+**Do not set quality below 6.** There is a chroma cliff between 5 and 6 that the
+byte-rate curve alone does not reveal - levels 6-9 differ only in quantisation,
+level 5 and below also throw away half the chroma resolution. The earlier
+recommendation to try quality 7, or 6, stands; 5 does not.
+
+It also means the Tight path this server currently serves is **full-chroma**,
+which is the baseline any H.264 comparison has to be made against. See
+`docs/NVENC-H264-PLAN.md` §10.

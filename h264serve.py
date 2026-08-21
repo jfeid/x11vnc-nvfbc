@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""
+h264serve.py - serve a pre-encoded H.264 file as RFB encoding 50.
+
+Phase 0 step 2 of docs/NVENC-H264-PLAN.md: prove the open H.264 encoding wire
+format against a real client before entangling any of it with x11vnc. If a
+viewer shows moving video from this, the format, the flags and the client's
+decoder are all confirmed, and Phase 1 only has to worry about x11vnc.
+
+Rect payload, per TigerVNC common/rfb/H264Decoder.cxx:
+
+    U32 length     bytes of H.264 that follow
+    U32 flags      0x1 resetContext, 0x2 resetAllContexts
+    U8  data[len]  Annex-B access unit
+
+One access unit per FramebufferUpdate. The stream must be encoded with
+h264_metadata=aud=insert so access units can be split on AUD NALs.
+
+  ./h264serve.py --file test.h264 --width 1280 --height 720 --port 5906
+"""
+
+import argparse
+import re
+import socket
+import struct
+import sys
+
+RESET_CONTEXT = 0x1
+RESET_ALL_CONTEXTS = 0x2
+ENCODING_H264 = 50
+
+
+def split_nals(data):
+    """Yield (start, end, nal_type) for every NAL in an Annex-B buffer."""
+    marks = []
+    for m in re.finditer(rb"\x00\x00\x01", data):
+        # a 4-byte start code is a 3-byte one with an extra leading zero
+        begin = m.start() - 1 if m.start() > 0 and data[m.start() - 1] == 0 else m.start()
+        marks.append((begin, data[m.end()] & 0x1F))
+    out = []
+    for i, (off, t) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(data)
+        out.append((off, end, t))
+    return out
+
+
+VCL_TYPES = (1, 5)
+AUD, SPS, PPS = 9, 7, 8
+
+
+def split_access_units(data):
+    """Split an Annex-B stream into access units.
+
+    A new access unit begins at the first NAL after the current one already
+    holds a VCL NAL. That keeps leading non-VCL NALs (SPS/PPS/SEI) attached to
+    the slice they describe, which splitting *at* VCL NALs would get backwards.
+    """
+    nals = split_nals(data)
+    if not nals:
+        raise SystemExit("h264serve.py: no NAL start codes found - is this Annex-B?")
+
+    aus, cur, cur_has_vcl = [], [], False
+    for off, end, t in nals:
+        if cur_has_vcl:
+            aus.append(cur)
+            cur, cur_has_vcl = [], False
+        cur.append((off, end, t))
+        if t in VCL_TYPES:
+            cur_has_vcl = True
+    if cur:
+        aus.append(cur)
+    return [[(data[a:b], t) for a, b, t in au] for au in aus]
+
+
+def normalise_aus(aus):
+    """Rebuild every access unit as SPS + PPS + <slice data>.
+
+    TigerVNC's Windows decoder requires the FIRST NAL of each buffer to be the
+    SPS: ParseSPS() checks buffer[0..3] for a start code, then demands NAL type
+    7. It does not scan. Anything in front of the SPS - an access unit
+    delimiter, an SEI - makes it return early, leaving full_width/full_height
+    at zero, and the blit is then skipped by a bounds check. The picture stays
+    black with no error reported anywhere, because ProcessInput failures are
+    swallowed deliberately ("hoping its a temporary encoding glitch").
+
+    Repeating the parameter sets on every access unit is what a real
+    implementation wants regardless - it is what lets a decoder join or resync
+    mid-stream rather than only at the start.
+    """
+    sps = next((b for au in aus for b, t in au if t == SPS), None)
+    pps = next((b for au in aus for b, t in au if t == PPS), None)
+    if sps is None or pps is None:
+        raise SystemExit("h264serve.py: stream carries no SPS/PPS - cannot build headers")
+
+    out = []
+    for au in aus:
+        body = b"".join(b for b, t in au if t not in (AUD, SPS, PPS))
+        out.append(sps + pps + body)
+    return out, sps, pps
+
+
+class Peer:
+    def __init__(self, sock):
+        self.sock, self.buf = sock, b""
+
+    def recv_exact(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise EOFError("client closed the connection")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def send(self, data):
+        self.sock.sendall(data)
+
+
+def handshake(p, width, height, name):
+    p.send(b"RFB 003.008\n")
+    ver = p.recv_exact(12).decode("ascii", "replace").strip()
+    print(f"  client version : {ver}")
+
+    p.send(struct.pack(">BB", 1, 1))                   # offer only "None"
+    chosen = p.recv_exact(1)[0]
+    if chosen != 1:
+        raise RuntimeError(f"client chose security {chosen}, this server only offers None(1)")
+    p.send(struct.pack(">I", 0))                       # SecurityResult OK
+    shared = p.recv_exact(1)[0]
+    print(f"  shared flag    : {shared}")
+
+    n = name.encode()
+    p.send(struct.pack(">HH", width, height)
+           + struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
+           + struct.pack(">I", len(n)) + n)
+
+
+def send_au(p, width, height, payload, flags):
+    """One FramebufferUpdate carrying a single encoding-50 rect."""
+    p.send(struct.pack(">BxH", 0, 1)                    # msg 0, 1 rectangle
+           + struct.pack(">HHHHi", 0, 0, width, height, ENCODING_H264)
+           + struct.pack(">II", len(payload), flags)
+           + payload)
+
+
+FIXED_LEN = {0: 19, 4: 7, 5: 5, 150: 9}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--file", required=True, help="Annex-B .h264 stream")
+    ap.add_argument("--width", type=int, required=True)
+    ap.add_argument("--height", type=int, required=True)
+    ap.add_argument("--port", type=int, default=5906)
+    ap.add_argument("--bind", default="127.0.0.1")
+    ap.add_argument("--timeout", type=int, default=600)
+    ap.add_argument("--loop", action="store_true", help="restart the stream when it ends")
+    args = ap.parse_args()
+
+    raw_aus = split_access_units(open(args.file, "rb").read())
+    aus, sps, pps = normalise_aus(raw_aus)
+    print(f"{args.file}: {len(aus)} access units; "
+          f"SPS {len(sps)}B + PPS {len(pps)}B prepended to each "
+          f"(TigerVNC's ParseSPS needs the SPS first)")
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((args.bind, args.port))
+    srv.listen(1)
+    srv.settimeout(args.timeout)
+    print(f"serving {args.width}x{args.height} on {args.bind}:{args.port} "
+          f"(display :{args.port - 5900}); security None")
+
+    try:
+        conn, addr = srv.accept()
+    except socket.timeout:
+        print(f"no client within {args.timeout}s", file=sys.stderr)
+        return 2
+    finally:
+        srv.close()
+
+    print(f"connection from {addr[0]}:{addr[1]}")
+    conn.settimeout(60)
+    p = Peer(conn)
+    idx, sent = 0, 0
+    try:
+        handshake(p, args.width, args.height, "h264serve")
+        while True:
+            msg = p.recv_exact(1)[0]
+
+            if msg == 2:                                        # SetEncodings
+                _pad, count = struct.unpack(">BH", p.recv_exact(3))
+                raw = p.recv_exact(4 * count)
+                encs = [v - 0x100000000 if v >= 0x80000000 else v
+                        for v in struct.unpack(f">{count}I", raw)]
+                if ENCODING_H264 in encs:
+                    print(f"  encoding 50    : offered at position "
+                          f"{encs.index(ENCODING_H264) + 1} of {len(encs)}")
+                else:
+                    print("  encoding 50    : NOT OFFERED - this client cannot decode "
+                          "H.264; nothing will render", file=sys.stderr)
+
+            elif msg == 3:                                      # FramebufferUpdateRequest
+                incremental = p.recv_exact(9)[0]
+                if not incremental:
+                    idx = 0                                     # full update: restart at the IDR
+                if idx >= len(aus):
+                    if not args.loop:
+                        print(f"  stream exhausted after {sent} frames")
+                        break
+                    idx = 0
+                flags = RESET_ALL_CONTEXTS if idx == 0 else 0
+                send_au(p, args.width, args.height, aus[idx], flags)
+                idx += 1
+                sent += 1
+                if sent % 30 == 0:
+                    print(f"  sent {sent} frames", flush=True)
+
+            elif msg == 6:                                      # ClientCutText
+                p.recv_exact(3)
+                (length,) = struct.unpack(">I", p.recv_exact(4))
+                p.recv_exact(length)
+            elif msg in FIXED_LEN:
+                p.recv_exact(FIXED_LEN[msg])
+            else:
+                raise RuntimeError(f"unhandled client message type {msg}")
+
+    except (EOFError, RuntimeError, socket.timeout) as exc:
+        print(f"\nended after {sent} frames: {exc}")
+    finally:
+        conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -8,11 +8,13 @@ cleanly and look fine in a log.
 
   ./rfbcheck.py --port 5901 --rect 100,100,256,256 --expect ff8000
   ./rfbcheck.py --port 5901 --info
+  ./rfbcheck.py --port 5901 --tight --compress 6 --quality 9 --stream 30
 
 Assumes the server allows the "None" security type (start it with -nopw).
 """
 
 import argparse
+import os
 import socket
 import struct
 import sys
@@ -73,6 +75,109 @@ def set_bgra_format(s):
     s.sendall(struct.pack(">B3x", 0) + pf)
 
 
+RFB_ENC_RAW = 0
+RFB_ENC_TIGHT = 7
+RFB_ENC_H264 = 50
+# rfbEncodingCompressLevel0 = 0xFFFFFF00, rfbEncodingQualityLevel0 = 0xFFFFFFE0
+# (/usr/include/rfb/rfbproto.h). The client picks these; the server obeys them.
+COMPRESS_BASE = -256
+QUALITY_BASE = -32
+
+TIGHT_FILL = 0x08
+TIGHT_JPEG = 0x09
+TIGHT_EXPLICIT_FILTER = 0x04
+TIGHT_FILTER_COPY, TIGHT_FILTER_PALETTE, TIGHT_FILTER_GRADIENT = 0, 1, 2
+TIGHT_MIN_TO_COMPRESS = 12
+
+
+def read_compact_len(s):
+    """Tight's 1-3 byte length field; returns (value, header_bytes)."""
+    b = recv_exact(s, 1)[0]
+    n, used = b & 0x7F, 1
+    if b & 0x80:
+        b = recv_exact(s, 1)[0]
+        n |= (b & 0x7F) << 7
+        used += 1
+        if b & 0x80:
+            b = recv_exact(s, 1)[0]
+            n |= b << 14
+            used += 1
+    return n, used
+
+
+def skip_tight_rect(s, w, h, tally=None, dump=None):
+    """Consume one Tight rect and return its size on the wire.
+
+    Walks the Tight headers only - no zlib inflate, no JPEG decode. For
+    measuring what the server's encoder produced, the size and the sub-encoding
+    it chose are the whole answer, and decoding would just burn client CPU
+    inside the measurement.
+
+    Recording the sub-encoding matters more than it looks: solid-colour loads
+    come back as `fill`/`palette` and never reach libjpeg, so a JPEG quality
+    setting measured against them moves nothing.
+    """
+    ctl = recv_exact(s, 1)[0]
+    used = 1
+    ctl >>= 4                       # low nibble is per-stream zlib reset flags
+
+    if ctl == TIGHT_FILL:
+        recv_exact(s, 3)            # TPIXEL: 3 bytes for our 32bpp/depth-24 format
+        used += 3
+        kind = "fill"
+    elif ctl == TIGHT_JPEG:
+        n, c = read_compact_len(s)
+        payload = recv_exact(s, n)
+        if dump is not None:
+            dump(payload)
+        used += c + n
+        kind = "jpeg"
+    elif ctl > TIGHT_JPEG:
+        raise RuntimeError(f"invalid tight compression control 0x{ctl:x}")
+    else:
+        if ctl & TIGHT_EXPLICIT_FILTER:
+            filt = recv_exact(s, 1)[0]
+            used += 1
+        else:
+            filt = TIGHT_FILTER_COPY
+        if filt == TIGHT_FILTER_PALETTE:
+            ncolours = recv_exact(s, 1)[0] + 1
+            recv_exact(s, ncolours * 3)
+            used += 1 + ncolours * 3
+            bpp = 1 if ncolours == 2 else 8
+            kind = "palette"
+        elif filt == TIGHT_FILTER_GRADIENT:
+            bpp, kind = 24, "gradient"
+        elif filt == TIGHT_FILTER_COPY:
+            bpp, kind = 24, "copy"
+        else:
+            raise RuntimeError(f"unknown tight filter {filt}")
+        plain = ((w * bpp + 7) // 8) * h
+        if plain < TIGHT_MIN_TO_COMPRESS:
+            recv_exact(s, plain)
+            used += plain
+        else:
+            n, c = read_compact_len(s)
+            recv_exact(s, n)
+            used += c + n
+
+    if tally is not None:
+        tally[kind] = tally.get(kind, 0) + 1
+    return used
+
+
+def wanted_encodings(tight=False, compress=None, quality=None, h264=False):
+    """Encoding list in preference order, plus the settings pseudo-encodings."""
+    encs = [RFB_ENC_TIGHT if tight else RFB_ENC_RAW]
+    if h264:
+        encs.insert(0, RFB_ENC_H264)
+    if compress is not None:
+        encs.append(COMPRESS_BASE + compress)
+    if quality is not None:
+        encs.append(QUALITY_BASE + quality)
+    return tuple(encs)
+
+
 def set_encodings(s, encodings=(0,)):
     s.sendall(struct.pack(">BBH", 2, 0, len(encodings))
               + b"".join(struct.pack(">i", e) for e in encodings))
@@ -82,8 +187,13 @@ def request_update(s, x, y, w, h, incremental=0):
     s.sendall(struct.pack(">BBHHHH", 3, incremental, x, y, w, h))
 
 
-def read_update(s):
-    """Read one FramebufferUpdate; returns {(x,y,w,h): raw_bgra_bytes}."""
+def read_update(s, tally=None, dump=None):
+    """Read one FramebufferUpdate.
+
+    Raw rects are returned as {(x,y,w,h): bgra_bytes}. Tight rects are counted
+    and discarded - see skip_tight_rect - so the returned dict is empty under
+    --tight and callers should read `tally` instead.
+    """
     while True:
         msg = recv_exact(s, 1)[0]
         if msg == 0:
@@ -103,9 +213,36 @@ def read_update(s):
     rects = {}
     for _ in range(nrects):
         x, y, w, h, enc = struct.unpack(">HHHHi", recv_exact(s, 12))
-        if enc != 0:
-            raise RuntimeError(f"server used encoding {enc}, expected raw(0)")
-        rects[(x, y, w, h)] = recv_exact(s, w * h * 4)
+        if enc == RFB_ENC_RAW:
+            data = recv_exact(s, w * h * 4)
+            rects[(x, y, w, h)] = data
+            nbytes = len(data)
+            if tally is not None:
+                tally["raw"] = tally.get("raw", 0) + 1
+        elif enc == RFB_ENC_H264:
+            # U32 length, U32 flags, then that many bytes of Annex-B
+            plen, flags = struct.unpack(">II", recv_exact(s, 8))
+            recv_exact(s, plen)
+            nbytes = 8 + plen
+            if tally is not None:
+                tally["B_h264"] = tally.get("B_h264", 0) + nbytes
+                tally["h264"] = tally.get("h264", 0) + 1
+                if flags:
+                    k = f"h264_flags{flags}"
+                    tally[k] = tally.get(k, 0) + 1
+        elif enc == RFB_ENC_TIGHT:
+            nbytes = skip_tight_rect(s, w, h, tally, dump)
+            if tally is not None:
+                tally["B_tight"] = tally.get("B_tight", 0) + nbytes
+                g = f"G_{w}x{h}"
+                tally[g] = tally.get(g, 0) + 1
+        else:
+            raise RuntimeError(
+                f"server used encoding {enc}; this client handles raw(0), "
+                f"tight(7) and h264(50)")
+        if tally is not None:
+            tally["bytes"] = tally.get("bytes", 0) + nbytes
+            tally["rects"] = tally.get("rects", 0) + 1
     return rects
 
 
@@ -122,6 +259,22 @@ def main():
     ap.add_argument("--info", action="store_true", help="just print ServerInit")
     ap.add_argument("--stream", type=float, metavar="SECS",
                     help="pump incremental updates for SECS and report client-side fps")
+    ap.add_argument("--tight", action="store_true",
+                    help="request Tight instead of Raw, so the server does real "
+                         "encoding work - the point when measuring the encoder. "
+                         "Payloads are sized and discarded, not decoded, so pixel "
+                         "checks still need Raw.")
+    ap.add_argument("--compress", type=int, choices=range(10), metavar="0-9",
+                    help="Tight compression level to request (pseudo-encoding -256+N)")
+    ap.add_argument("--quality", type=int, choices=range(10), metavar="0-9",
+                    help="JPEG quality level to request (pseudo-encoding -32+N)")
+    ap.add_argument("--h264", action="store_true",
+                    help="also advertise encoding 50 and accept H.264 rects "
+                         "(sized and skipped, not decoded)")
+    ap.add_argument("--dump-jpeg", metavar="DIR",
+                    help="write Tight JPEG payloads to DIR as NNNN.jpg. Lets you inspect "
+                         "what the server's encoder actually produced - chroma subsampling "
+                         "in particular, which is invisible from the protocol")
     ap.add_argument("--tolerance", type=float, default=0.98,
                     help="fraction of pixels that must match (default 0.98)")
     ap.add_argument("--wait", type=float, default=0.0, metavar="SECS",
@@ -129,6 +282,15 @@ def main():
                          "Updates are asynchronous, so a single cold read can "
                          "legitimately still show the previous contents.")
     args = ap.parse_args()
+
+    if args.tight and (args.rect or args.expect or args.absent):
+        sys.exit("rfbcheck.py: --tight cannot verify pixels (Tight payloads are "
+                 "sized, not decoded); drop --tight, or drop --rect/--expect/--absent")
+    if (args.compress is not None or args.quality is not None) and not args.tight:
+        print("rfbcheck.py: --compress/--quality only apply to Tight; "
+              "add --tight or they are ignored by the server", file=sys.stderr)
+
+    encs = wanted_encodings(args.tight, args.compress, args.quality, args.h264)
 
     s = socket.create_connection((args.host, args.port), timeout=15)
     s.settimeout(15)
@@ -140,18 +302,59 @@ def main():
         # Client-side view of delivered frames: the metric that actually
         # matters, independent of anything the server reports about itself.
         set_bgra_format(s)
-        set_encodings(s, (0,))
+        set_encodings(s, encs)
+        print(f"encodings: {list(encs)}"
+              + (f"  (tight compress={args.compress} quality={args.quality})"
+                 if args.tight else ""))
+        tally = {}
+        t_first = [None, None]      # first any-rect, first h264-rect
+        dump = None
+        if args.dump_jpeg:
+            os.makedirs(args.dump_jpeg, exist_ok=True)
+            counter = [0]
+            def dump(payload):
+                counter[0] += 1
+                if counter[0] <= 20:          # a handful is plenty to inspect
+                    with open(os.path.join(args.dump_jpeg,
+                                           f"{counter[0]:04d}.jpg"), "wb") as fh:
+                        fh.write(payload)
         t0 = time.time()
-        updates = rects_n = nbytes = 0
+        updates = 0
         while time.time() - t0 < args.stream:
             request_update(s, 0, 0, w, h, incremental=1)
-            got = read_update(s)
+            before_h = tally.get("h264", 0)
+            read_update(s, tally, dump)
             updates += 1
-            rects_n += len(got)
-            nbytes += sum(len(v) for v in got.values())
+            if t_first[0] is None and tally.get("rects", 0) > 0:
+                t_first[0] = time.time() - t0
+            if t_first[1] is None and tally.get("h264", 0) > before_h:
+                t_first[1] = time.time() - t0
         dt = time.time() - t0
+        nbytes = tally.get("bytes", 0)
+        rects_n = tally.get("rects", 0)
+        print("  first rect: " +
+              (f"{t_first[0]*1000:.0f} ms" if t_first[0] is not None else "never") +
+              "   first h264: " +
+              (f"{t_first[1]*1000:.0f} ms" if t_first[1] is not None else "never"))
         print(f"stream: {updates/dt:.1f} updates/s, {rects_n/dt:.1f} rects/s, "
-              f"{nbytes/dt/1048576:.1f} MB/s of pixels over {dt:.1f}s")
+              f"{nbytes/dt/1048576:.2f} MB/s on the wire over {dt:.1f}s")
+        bykind = {k[2:]: v for k, v in tally.items() if k.startswith("B_")}
+        if bykind:
+            tot = sum(bykind.values()) or 1
+            print("  wire bytes: " + ", ".join(
+                f"{k}={v/dt/1048576:.2f} MB/s ({100.0*v/tot:.1f}%)"
+                for k, v in sorted(bykind.items())))
+        geo = sorted(((k[2:], v) for k, v in tally.items() if k.startswith("G_")),
+                     key=lambda kv: -kv[1])[:5]
+        if geo:
+            print("  tight rect sizes (top): " +
+                  ", ".join(f"{k} x{v}" for k, v in geo))
+        kinds = sorted((k, v) for k, v in tally.items()
+                       if k not in ("bytes", "rects") and not k.startswith(("B_", "G_")))
+        if kinds:
+            total = sum(v for _, v in kinds)
+            print("  sub-encodings: " + ", ".join(
+                f"{k}={v} ({100.0*v/total:.1f}%)" for k, v in kinds))
         return 0
 
     if args.info or not args.rect:

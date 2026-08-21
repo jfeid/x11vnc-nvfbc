@@ -20,7 +20,7 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `compare.py` | diffs two `measure.py` result sets |
 | `ab.sh` | runs two binaries head-to-head under an identical load and client. **The only sound way to compare delivered frames.** |
 | `verify.sh` | end-to-end pixel/coordinate check of a build on a throwaway port |
-| `rfbcheck.py` | minimal RFB client: fetch a rect and verify pixels, or stream and count updates |
+| `rfbcheck.py` | minimal RFB client: verify pixels (Raw), or `--tight --compress N --quality N --stream` to drive the server's Tight encoder and report wire bytes plus a fill/palette/jpeg breakdown |
 | `loadgen` | deterministic X11 load: controllable area, rate and dirty fraction |
 | `nvfloor` | this machine's NVFBC cost floor, independent of x11vnc |
 | `diffcheck` | validates the NVFBC diff map against an independent per-tile memcmp |
@@ -28,11 +28,14 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `latency.py` | damage-to-client latency: flips a rect and times how long it takes to reach a VNC client |
 | `latency-ab.sh` | drives `latency.py` across capture configurations; `REVERSE=1` controls for sweep position |
 | `waitdefer-ab.sh` | `-wait`/`-defer` variants, latency (`MODE=lat`) or throughput (`MODE=tput`) |
+| `encoding-ab.sh` | Tight compression/quality A/B/A on a throwaway port with a local client. **The only sound way to measure encoder settings** - the live desktop and the transport to a real client both swamp the effect. |
 | `root-ab.sh` | the shm-vs-NVFBC comparison that can only be done as root |
 | `remote-check.sh` | exercises the NVFBC remote-control interface against a running server |
 | `keytarget` | keypress-driven repaint window: the server-side target for `vncprobe.ps1` |
 | `vncprobe.ps1` | Windows-side RFB probe: keypress -> first update latency over the real transport (tunnel/WLAN/VDSL) |
 | `vncprobe.py` | same probe, run server-side over loopback: isolates the server half from the transport |
+| `rfb-probe.py` | dumps the encoding list a client advertises, in its preference order. Answers "does this viewer support H.264, and under what number" without guessing |
+| `h264serve.py` | serves a pre-encoded Annex-B file as RFB **encoding 50**. Reference implementation of the H.264 rect format, and the known-good stream to check an encoder against |
 
 Recorded measurements and what each run was: `results/NOTES.md`.
 Fork vs **stock** x11vnc: `results/stock-comparison.md`.
@@ -71,7 +74,13 @@ DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority ./measure.py --label after
 ```
 
 Flags: `--duration N` (default 30 s per scenario), `--scenarios a,b,c`,
-`--no-load` (draw nothing — passive only), `--no-floor` (skip the NVFBC probe).
+`--no-load` (draw nothing — passive only), `--no-floor` (skip the NVFBC probe),
+`--blit` (video-like full-surface repaints instead of solid cells — the default
+cell load never reaches libjpeg, so use this for anything JPEG-related).
+
+Client-side Tight settings are recorded automatically in `context.client_encoding`,
+read from the server log. They change encode cost and delivered bytes
+substantially, so a result set without them is not interpretable.
 
 ## What it measures
 

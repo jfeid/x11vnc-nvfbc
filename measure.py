@@ -101,6 +101,41 @@ def vnc_clients():
     return max(0, len([l for l in out.splitlines() if ":5900" in l]))
 
 
+CLIENT_COMPRESS_RE = re.compile(r"Using compression level (\d+) for client (\S+)")
+CLIENT_QUALITY_RE = re.compile(r"Using image quality level (\d+) for client (\S+)")
+CLIENT_ENCODING_RE = re.compile(
+    r"(?:Using (\S+) encoding|Switching from \S+ to (\S+) Encoding) for client (\S+)")
+
+
+def read_client_encoding():
+    """Per-client Tight settings, as libvncserver last logged them.
+
+    Compression level and JPEG quality are chosen by the *client* in
+    SetEncodings, and they drive server encode cost directly - a result set is
+    not interpretable without them.  The server logs them on every SetEncodings,
+    so the last value seen for a client is the one in force.  Recording it here
+    means no run is ever ambiguous about which client settings produced it.
+    """
+    latest = {}
+    try:
+        with open(LOG, "r", errors="replace") as fh:
+            for line in fh:
+                m = CLIENT_COMPRESS_RE.search(line)
+                if m:
+                    latest.setdefault(m.group(2), {})["compress_level"] = int(m.group(1))
+                    continue
+                m = CLIENT_QUALITY_RE.search(line)
+                if m:
+                    latest.setdefault(m.group(2), {})["quality_level"] = int(m.group(1))
+                    continue
+                m = CLIENT_ENCODING_RE.search(line)
+                if m:
+                    latest.setdefault(m.group(3), {})["encoding"] = m.group(1) or m.group(2)
+    except OSError as e:
+        return {"error": f"cannot read {LOG}: {e}"}
+    return latest
+
+
 STAT_RE = re.compile(
     r"NVFBC stats: ([\d.]+) new fps, ([\d.]+) grabs/sec, (\d+) new frames / (\d+) total grabs"
 )
@@ -186,11 +221,12 @@ def derive_capture_model(r, floor, target_us):
         r["proj_cpu_pct"] = round(cpu - (capture_ms_s - proj_ms_s) / 10.0, 1)
 
 
-def run_scenario(name, pid, duration, use_load, loadgen):
+def run_scenario(name, pid, duration, use_load, loadgen, blit=False):
     geom, fps, frac = SCENARIOS[name]
     label = f"{name:7s}"
     if geom and use_load:
-        print(f"  {label} load {geom} @{fps}fps frac={frac} for {duration}s ...", flush=True)
+        how = "blit" if blit else f"frac={frac}"
+        print(f"  {label} load {geom} @{fps}fps {how} for {duration}s ...", flush=True)
     else:
         print(f"  {label} passive for {duration}s ...", flush=True)
 
@@ -206,10 +242,12 @@ def run_scenario(name, pid, duration, use_load, loadgen):
 
     proc = None
     if geom and use_load:
+        cmd = [loadgen, "-g", geom, "-r", str(fps), "-d", str(duration),
+               "-f", str(frac), "-t", f"loadgen-{name}"]
+        if blit:
+            cmd.append("-blit")       # note: blit redraws the whole surface, so -f is ignored
         proc = subprocess.Popen(
-            [loadgen, "-g", geom, "-r", str(fps), "-d", str(duration),
-             "-f", str(frac), "-t", f"loadgen-{name}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         out, _ = proc.communicate(timeout=duration + 30)
         achieved = None
         for line in (out or "").splitlines():
@@ -266,6 +304,12 @@ def main():
                     help="passive only; draws nothing on the user's screen")
     ap.add_argument("--no-floor", action="store_true",
                     help="skip the NVFBC cost-floor probe (no second capture session)")
+    ap.add_argument("--blit", action="store_true",
+                    help="loadgen draws one full-surface image per frame (video-like) "
+                         "instead of solid cells; the default cell load is encoded as "
+                         "Tight fills/palettes and never reaches JPEG, so use this to "
+                         "measure anything involving JPEG quality. Ignores each "
+                         "scenario's dirty fraction, which makes 'sparse' meaningless.")
     args = ap.parse_args()
 
     pid = find_x11vnc()
@@ -295,13 +339,26 @@ def main():
         "x_screen": sh("DISPLAY=%s xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}'"
                        % os.environ.get("DISPLAY", ":1")).strip(),
         "vnc_clients": vnc_clients(),
+        "client_encoding": read_client_encoding(),
         "duration_s": args.duration,
         "load_enabled": use_load,
+        "blit": args.blit,
     }
 
     print(f"\nx11vnc pid {pid}  clients={ctx['vnc_clients']}  head={ctx['git_head']}"
           f"{' +dirty' if ctx['git_dirty'] else ''}")
-    print(f"cmdline: {ctx['x11vnc_cmdline']}\n")
+    print(f"cmdline: {ctx['x11vnc_cmdline']}")
+    ce = ctx["client_encoding"]
+    if not ce:
+        print("client encoding: not found in %s - settings unknown for this run" % LOG)
+    elif "error" in ce:
+        print("client encoding: %s" % ce["error"])
+    else:
+        for who, st in ce.items():
+            print(f"client encoding: {who} {st.get('encoding','?')} "
+                  f"compress={st.get('compress_level','?')} "
+                  f"quality={st.get('quality_level','?')}")
+    print(f"load shape: {'blit (full-surface image/frame)' if args.blit else 'cells (solid fills)'}\n")
     if ctx["vnc_clients"] == 0:
         print("WARNING: no VNC client connected - the server does far less work.\n"
               "         Connect a client for numbers comparable to real use.\n")
@@ -324,7 +381,8 @@ def main():
                   f"needs captureBox+frameSize rather than output tracking")
         print()
 
-    results = [run_scenario(n, pid, args.duration, use_load, loadgen) for n in names]
+    results = [run_scenario(n, pid, args.duration, use_load, loadgen, args.blit)
+               for n in names]
     for r in results:
         derive_capture_model(r, floor, tgt_us)
 
