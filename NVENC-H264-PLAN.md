@@ -1,6 +1,7 @@
 # NVENC H.264 for x11vnc-nvfbc — implementation plan
 
-Status: **Phases 0-2 complete** (2026-08-21), hybrid gate wired. Phase 3 required, not optional.
+Status: **Phases 0-2 complete** (2026-08-21), hybrid gate wired. Phase 3 as written is
+pointless - see §14; the replacement target is x11vnc's scan/copy, not the upload.
 Written 2026-08-19.
 
 Goal: emit RFB **encoding 50** (the open H.264 encoding) from an NVENC-encoded
@@ -635,3 +636,71 @@ being affordable across the whole screen. A quarter-screen video at 30fps is
 well be cheaper and faster than a full-frame 2560x1440 encode. Worth measuring
 before assuming the single threshold is right - a dirty-*area* term, not just a
 rate, may belong in the decision.
+
+
+## 14. Phase 3 redirected (2026-08-21)
+
+Phase 3 was going to move capture to `NVFBC_SHARED_CUDA` so frames never touch
+host memory. Two measurements say don't.
+
+### The upload is not the cost
+
+Same motion, same server, only the encode rate varied:
+
+| encode rate | CPU |
+|---|---|
+| 5 fps | 49.9% |
+| 15 fps | 49.3% |
+| 30 fps | 49.4% |
+
+**Flat across 6x.** NVENC submission is asynchronous and the host->device copy
+is DMA, so per-frame encoding costs the CPU almost nothing. The ~49% is
+x11vnc's own scan and tile copy, which happens whatever the pixels are used
+for. Zero-copy capture would remove work that is not being done.
+
+§13 asserted the 52% was "~300 MB/s of BGRA crossing PCIe". That was never
+measured and it was wrong.
+
+### And the switch would be expensive anyway
+
+`bench/nvswitch` measures the capture-type switch the hybrid would have needed:
+
+```
+create TO_SYS      : 18.3 ms
+create SHARED_CUDA : 18.7 ms
+full switch        : 19.6 ms
+two sessions, one handle  : refused ("already running for this NvFBC client")
+two sessions, two handles : refused ("a different context is already bound")
+```
+
+Concurrent ToSys and CUDA sessions are impossible, so every gate transition
+would pay ~20 ms plus a full re-capture - on the exit path, which is the
+quality-critical one. §11's "each mode uses the signal available to it" was a
+neat resolution to a problem worth avoiding entirely.
+
+### What the numbers say instead
+
+Same server, same motion, only the client's encoding differing:
+
+| | CPU | wire |
+|---|---|---|
+| Tight | 99.1% (saturated) | 25.79 MB/s |
+| H.264 | 53.6% | 2.14 MB/s |
+
+The hybrid already halves CPU against Tight and cuts bandwidth 14x. The
+remaining cost is the scan/copy, and in H.264 mode most of it is wasted:
+per-tile comparison exists to find damage for Tight, but a full-frame encode
+does not care which tiles changed.
+
+### Proposed Phase 3': encode the NVFBC buffer directly
+
+While H.264 owns the output, skip x11vnc's tile compare and tile copy, and
+point the encoder at NVFBC's own capture buffer rather than
+`screen->frameBuffer`. The fork already captures only the served region, so the
+geometry matches.
+
+Still needed: the diff map for the gate (cheap, GPU-side, already enabled), and
+a populated framebuffer at the moment of exit for the Tight repaint - so the
+copy has to happen on the way out, not per frame.
+
+No CUDA, no session switching, no loss of the diff map.
