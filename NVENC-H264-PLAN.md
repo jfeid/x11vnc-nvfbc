@@ -242,7 +242,7 @@ Cheapest possible answer to the two questions that could kill the project.
 1. Encode a still of the real desktop with `h264_nvenc` at 4:2:0, 20-25 Mbps.
    View it next to the original at 100%. **This is the go/no-go on text.**
 2. Write a throwaway RFB server that serves one static encoding-50 rect from a
-   pre-encoded Annex-B file, and connect the real TigerVNC 1.15.0 client to it.
+   pre-encoded Annex-B file, and connect the real TigerVNC 1.16.2 client to it.
    Confirms the wire format, the flags, and that the MF decoder accepts our
    stream — before any of it is entangled with x11vnc.
 
@@ -355,7 +355,7 @@ option because of it.
 
 `bench/h264serve.py` served a pre-encoded 1280x720 stream (150 frames, panning,
 so inter-frame prediction is genuinely exercised) as encoding-50 rects to the
-real TigerVNC 1.15.0 client over the real SSH tunnel. Picture confirmed by eye.
+real TigerVNC 1.16.2 client over the real SSH tunnel. Picture confirmed by eye.
 
 Confirmed by this: the rect layout (`U32 length, U32 flags, U8 data[]`), one
 access unit per FramebufferUpdate, `resetAllContexts` at stream restart, and the
@@ -743,3 +743,86 @@ judging with. Note that x11vnc's remote control goes through a single
 `X11VNC_REMOTE` property on the display, so it cannot be aimed at a particular
 server - it only works with exactly one x11vnc running, as
 `bench/remote-check.sh` already documents.
+
+
+## 16. Client version correction
+
+The viewer is **TigerVNC 1.16.2**, not 1.15.0 as recorded earlier. Checked
+against the v1.16.2 tag rather than master: `H264Decoder.cxx` differs only in
+i18n and one error string, and `DecodeManager.cxx` has no changes to queueing or
+pacing. Every Phase 0 finding stands - rect format, reset flags, per-rect
+decoder contexts, and the SPS-first requirement.
+
+Read the tag, not master, when checking client behaviour.
+
+
+## 17. OPEN BUG: client freezes under sustained H.264 (2026-08-21)
+
+Reproducible, four times, always the same way: run `bench/measure.py`, and a few
+seconds into the `medium` scenario the viewer's picture stops updating and input
+stops working. It recovers exactly when the gate hands back to Tight, ~60 s
+later. Never seen in normal interactive use - only under sustained full-screen
+change.
+
+### Established by measurement
+
+- **The server is healthy throughout.** `NVFBC stats` keep logging 18-22
+  grabs/sec for the whole freeze, so watch_loop is cycling, not blocked.
+- **Bytes keep leaving the socket** at 1.2-1.6 MB/s. Note this only proves they
+  left x11vnc - sshd sits between the server and the viewer.
+- **The stream is valid.** 640 access units captured with
+  `rfbcheck.py --dump-h264` under the failing load decode with zero complaints:
+  640 frames, Main profile, 2560x1440, one IDR with flags=1 at unit 1, sizes
+  min 42 KB / median 84 KB / max 350 KB.
+- **Decode is not expensive.** Software decode of that stream is 3.6 ms/frame
+  on this CPU; the client has hardware Media Foundation.
+- **`rfbcheck` never reproduces it** - it skips payloads instead of decoding, so
+  it is an infinitely fast consumer.
+
+### Three fixes that did NOT work
+
+Each was plausible, each was wrong, each cost a freeze to disprove:
+
+1. **Backpressure guard** - skip the frame when the socket queue exceeds 512 KB.
+   No effect. `SIOCOUTQ` stays low because sshd drains eagerly into its own
+   buffers, so the tunnel hides any real backpressure.
+2. **Fit check** - refuse to start a write unless the whole access unit fits in
+   the remaining send buffer, on the theory that `rfbWriteExact` was blocking
+   watch_loop. Disproved directly: the NVFBC stats show watch_loop never
+   stalled. (It did fix a real, separate problem - `systemctl restart` used to
+   hang for a minute because a blocked write meant SIGTERM was never processed.
+   Worth keeping on those grounds.)
+3. **RFB flow control** - only send when `cl->requestedRegion` is non-empty, and
+   clear it after. No effect on the freeze, and that is itself informative: the
+   client *is* still requesting, so it is not falling silent. Correct on its own
+   merits - libvncserver's encoders obey requests and ours did not - so kept.
+
+### Current best hypothesis (untested)
+
+`DecodeManager` gives each worker two buffers and the reader thread blocks in
+`producerCond.wait()` when none are free. `H264Decoder` is `DecoderOrdered`, so
+H.264 rects serialise onto a single worker, each costing a decode plus an
+NV12->RGB32 conversion plus a 14.7 MB blit. If that is slower than the arrival
+rate, buffers fill, the reader blocks, and a blocked reader stops the client
+reading the socket *and* processing input - which is exactly the symptom.
+
+It also explains why request-based pacing did nothing: TigerVNC pipelines its
+update requests, so it keeps asking while its own queue backs up. Requests are
+not a backpressure signal for this client.
+
+`h264_fps` was lowered from 30 to 10 at runtime as a first test of this. **Not
+yet verified** - it needs another bench run, and the operator has absorbed four
+freezes already.
+
+### If the hypothesis holds
+
+The fix is adaptive rather than a fixed rate: measure what the client actually
+consumes and back off. A fixed `-h264_fps` that is safe for a 2560x1440 client
+on this hardware will be wrong for a different resolution or a faster viewer.
+
+### If it does not hold
+
+Stop changing the server. Get TigerVNC's own log from the Windows side
+(`-Log *:stderr:100`) and find out what the client thinks is happening, because
+three server-side theories in a row have now been wrong and the server-side
+evidence is exhausted.
