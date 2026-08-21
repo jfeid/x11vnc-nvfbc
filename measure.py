@@ -103,6 +103,10 @@ def vnc_clients():
 
 CLIENT_COMPRESS_RE = re.compile(r"Using compression level (\d+) for client (\S+)")
 CLIENT_QUALITY_RE = re.compile(r"Using image quality level (\d+) for client (\S+)")
+H264_CLIENT_RE = re.compile(
+    r"h264: client (\S+) offers encoding 50 \((\w+)")
+H264_MODE_RE = re.compile(r"h264: (motion|quiet) ([\d.]+) screens/s")
+
 CLIENT_ENCODING_RE = re.compile(
     r"(?:Using (\S+) encoding|Switching from \S+ to (\S+) Encoding) for client (\S+)")
 
@@ -131,6 +135,13 @@ def read_client_encoding():
                 m = CLIENT_ENCODING_RE.search(line)
                 if m:
                     latest.setdefault(m.group(3), {})["encoding"] = m.group(1) or m.group(2)
+                    continue
+                m = H264_CLIENT_RE.search(line)
+                if m:
+                    # "preferred" means the viewer asked for H.264, so the
+                    # hybrid is live for this client; "not" means pure Tight.
+                    latest.setdefault(m.group(1), {})["h264"] = (
+                        m.group(2) == "preferred")
     except OSError as e:
         return {"error": f"cannot read {LOG}: {e}"}
     return latest

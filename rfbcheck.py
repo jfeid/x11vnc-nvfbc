@@ -187,6 +187,9 @@ def request_update(s, x, y, w, h, incremental=0):
     s.sendall(struct.pack(">BBHHHH", 3, incremental, x, y, w, h))
 
 
+h264_sink = None
+
+
 def read_update(s, tally=None, dump=None):
     """Read one FramebufferUpdate.
 
@@ -222,7 +225,9 @@ def read_update(s, tally=None, dump=None):
         elif enc == RFB_ENC_H264:
             # U32 length, U32 flags, then that many bytes of Annex-B
             plen, flags = struct.unpack(">II", recv_exact(s, 8))
-            recv_exact(s, plen)
+            payload = recv_exact(s, plen)
+            if h264_sink is not None:
+                h264_sink(payload, flags, w, h)
             nbytes = 8 + plen
             if tally is not None:
                 tally["B_h264"] = tally.get("B_h264", 0) + nbytes
@@ -271,6 +276,17 @@ def main():
     ap.add_argument("--h264", action="store_true",
                     help="also advertise encoding 50 and accept H.264 rects "
                          "(sized and skipped, not decoded)")
+    ap.add_argument("--slow", type=float, default=0.0, metavar="MS",
+                    help="sleep MS after each update, to imitate a viewer that "
+                         "has to decode. Without this the client is effectively "
+                         "infinitely fast and cannot reproduce anything that "
+                         "depends on a slow consumer - which is most of what "
+                         "goes wrong with a pushed video stream.")
+    ap.add_argument("--dump-h264", metavar="FILE",
+                    help="append every H.264 access unit to FILE as raw Annex-B, "
+                         "and log per-unit size/flags to FILE.log. Lets the stream "
+                         "the server produced be checked offline - the client "
+                         "reports nothing when it fails to decode one")
     ap.add_argument("--dump-jpeg", metavar="DIR",
                     help="write Tight JPEG payloads to DIR as NNNN.jpg. Lets you inspect "
                          "what the server's encoder actually produced - chroma subsampling "
@@ -291,6 +307,18 @@ def main():
               "add --tight or they are ignored by the server", file=sys.stderr)
 
     encs = wanted_encodings(args.tight, args.compress, args.quality, args.h264)
+
+    global h264_sink
+    if args.dump_h264:
+        raw = open(args.dump_h264, "wb")
+        meta = open(args.dump_h264 + ".log", "w")
+        counter = [0]
+
+        def h264_sink(payload, flags, w, h):
+            counter[0] += 1
+            raw.write(payload)
+            meta.write(f"{counter[0]}\t{len(payload)}\t{flags}\t{w}x{h}\n")
+            meta.flush()
 
     s = socket.create_connection((args.host, args.port), timeout=15)
     s.settimeout(15)
@@ -329,6 +357,8 @@ def main():
                 t_first[0] = time.time() - t0
             if t_first[1] is None and tally.get("h264", 0) > before_h:
                 t_first[1] = time.time() - t0
+            if args.slow > 0:
+                time.sleep(args.slow / 1000.0)
         dt = time.time() - t0
         nbytes = tally.get("bytes", 0)
         rects_n = tally.get("rects", 0)
