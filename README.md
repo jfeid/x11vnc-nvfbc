@@ -20,7 +20,8 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `compare.py` | diffs two `measure.py` result sets |
 | `ab.sh` | runs two binaries head-to-head under an identical load and client. **The only sound way to compare delivered frames.** |
 | `verify.sh` | end-to-end pixel/coordinate check of a build on a throwaway port |
-| `rfbcheck.py` | minimal RFB client: verify pixels (Raw), or `--tight --compress N --quality N --stream` to drive the server's Tight encoder and report wire bytes plus a fill/palette/jpeg breakdown |
+| `rfbcheck.py` | minimal RFB client: verify pixels (Raw), or `--tight --compress N --quality N --stream` to drive the server's Tight encoder and report wire bytes plus a fill/palette/jpeg breakdown. `--h264` accepts encoding 50; `--fence` advertises RFB fence support and echoes ServerFence, so `--fence --slow N` imitates a paced consumer (plan §18) |
+| `h264-testserver.sh` | launches a throwaway `-h264` server on a spare port (default 5906, X11 capture so it does not fight production's NVFBC session) to test the fence flow-control fix without touching 5900 |
 | `loadgen` | deterministic X11 load: controllable area, rate and dirty fraction |
 | `nvfloor` | this machine's NVFBC cost floor, independent of x11vnc |
 | `diffcheck` | validates the NVFBC diff map against an independent per-tile memcmp |

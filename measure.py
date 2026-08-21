@@ -30,6 +30,11 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
 LOG = "/var/log/x11vnc.log"
+# The VNC port to sample, and the server to sample it from.  Both are settable
+# (--port/--pid/--log) because a throwaway server on a spare port is how the
+# H.264 work is tested without disturbing the live service on 5900 - and with
+# two x11vnc running, "the first pgrep hit" is the wrong one about half the time.
+PORT = 5900
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 
 # name -> (geometry or None, target fps, dirty fraction)
@@ -46,11 +51,34 @@ def sh(cmd, **kw):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw).stdout
 
 
-def find_x11vnc():
+def find_x11vnc(port=None):
+    """PID of the x11vnc serving `port`.
+
+    With one server the first hit is right.  With a test server alongside the
+    live one it is a coin flip, and measuring the wrong process silently
+    produces a result set that looks fine and means nothing - so when a port is
+    given, match it against each candidate's -rfbport.
+    """
     out = sh("pgrep -x x11vnc").split()
     if not out:
         sys.exit("measure.py: no running x11vnc process found")
-    return int(out[0])
+    pids = [int(p) for p in out]
+    if port is not None:
+        want = re.compile(r"-rfbport\s+%d(\s|$)" % port)
+        match = [p for p in pids if want.search(cmdline(p))]
+        if len(match) == 1:
+            return match[0]
+        if len(match) > 1:
+            sys.exit("measure.py: %d servers claim -rfbport %d: %s"
+                     % (len(match), port, match))
+        # No cmdline says so.  Only safe to fall through if there is exactly one
+        # server; otherwise we would measure an arbitrary one.
+        if len(pids) == 1:
+            return pids[0]
+        sys.exit("measure.py: no x11vnc has -rfbport %d, and %d are running "
+                 "(%s) - pass --pid to say which one"
+                 % (port, len(pids), pids))
+    return pids[0]
 
 
 def cmdline(pid):
@@ -92,13 +120,13 @@ def cpu_ticks(pid):
 
 def vnc_bytes():
     """Total bytes sent on all established connections from the VNC port."""
-    out = sh("ss -tin state established '( sport = :5900 )' 2>/dev/null")
+    out = sh("ss -tin state established '( sport = :%d )' 2>/dev/null" % PORT)
     return sum(int(m) for m in re.findall(r"bytes_sent:(\d+)", out))
 
 
 def vnc_clients():
-    out = sh("ss -tn state established '( sport = :5900 )' 2>/dev/null")
-    return max(0, len([l for l in out.splitlines() if ":5900" in l]))
+    out = sh("ss -tn state established '( sport = :%d )' 2>/dev/null" % PORT)
+    return max(0, len([l for l in out.splitlines() if (":%d" % PORT) in l]))
 
 
 CLIENT_COMPRESS_RE = re.compile(r"Using compression level (\d+) for client (\S+)")
@@ -321,9 +349,29 @@ def main():
                          "Tight fills/palettes and never reaches JPEG, so use this to "
                          "measure anything involving JPEG quality. Ignores each "
                          "scenario's dirty fraction, which makes 'sparse' meaningless.")
+    ap.add_argument("--port", type=int, default=5900,
+                    help="VNC port to sample, and how the server is identified "
+                         "(default 5900). Use the throwaway port when testing a "
+                         "second server so the live one is not measured by mistake.")
+    ap.add_argument("--pid", type=int,
+                    help="measure this x11vnc PID instead of discovering it")
+    ap.add_argument("--log", help="server log to read NVFBC stats and client "
+                                  "encoding from (default: the target's own -o "
+                                  "path, else /var/log/x11vnc.log)")
     args = ap.parse_args()
 
-    pid = find_x11vnc()
+    global PORT, LOG
+    PORT = args.port
+    pid = args.pid if args.pid else find_x11vnc(args.port)
+    # Read the log the target actually writes: with a second server on a spare
+    # port, /var/log/x11vnc.log belongs to the other one, so stats and client
+    # encoding would be attributed to the wrong process.
+    if args.log:
+        LOG = args.log
+    else:
+        m_log = re.search(r"-o\s+(\S+)", cmdline(pid))
+        if m_log:
+            LOG = m_log.group(1)
     loadgen = os.path.join(HERE, "loadgen")
     use_load = not args.no_load
     if use_load and not os.path.exists(loadgen):
@@ -356,7 +404,8 @@ def main():
         "blit": args.blit,
     }
 
-    print(f"\nx11vnc pid {pid}  clients={ctx['vnc_clients']}  head={ctx['git_head']}"
+    print(f"\nx11vnc pid {pid}  port {PORT}  log {LOG}")
+    print(f"x11vnc pid {pid}  clients={ctx['vnc_clients']}  head={ctx['git_head']}"
           f"{' +dirty' if ctx['git_dirty'] else ''}")
     print(f"cmdline: {ctx['x11vnc_cmdline']}")
     ce = ctx["client_encoding"]

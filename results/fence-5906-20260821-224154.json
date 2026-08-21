@@ -1,0 +1,100 @@
+{
+  "context": {
+    "label": "fence-5906",
+    "timestamp": "2026-08-21T22:39:50",
+    "pid": 480622,
+    "x11vnc_cmdline": "$REPO/bench/../x11vnc/src/x11vnc -rfbport 5906 -localhost -noipv6 -nopw -forever -shared -threads -repeat -clip 2560x1440+0+0 -nocursor -h264 -h264_bitrate 20000 -h264_fps 30 -h264_enter 8 -o /tmp/x11vnc-h264-test-5906.log",
+    "x11vnc_binary": "$REPO/x11vnc/src/x11vnc",
+    "binary_sha256": "b151ab3e396651398069c252b695af8c4417c830d7f36ffa28dbad4c1cc0e611",
+    "binary_mtime": "2026-08-21 22:11:22.387798910 +0300",
+    "git_head": "fb042c2",
+    "git_dirty": true,
+    "gpu": "NVIDIA GeForce RTX 3060, 550.163.01",
+    "x_screen": "4480x1440",
+    "vnc_clients": 1,
+    "client_encoding": {
+      "127.0.0.1": {
+        "h264": true,
+        "compress_level": 2,
+        "quality_level": 8,
+        "encoding": "ZRLE"
+      }
+    },
+    "duration_s": 30,
+    "load_enabled": true,
+    "blit": false,
+    "nvfbc_floor": {},
+    "clip": "2560x1440+0+0",
+    "clip_matches_output": null
+  },
+  "results": [
+    {
+      "scenario": "idle",
+      "geometry": null,
+      "target_fps": null,
+      "dirty_frac": null,
+      "loadgen_achieved_fps": null,
+      "wall_s": 30.02,
+      "cpu_pct": 13.1,
+      "cpu_s": 3.93,
+      "kb_per_sec": 16.8,
+      "log_intervals": 0,
+      "log_covered_s": 0,
+      "new_fps": null,
+      "grabs_per_sec": null,
+      "grabs_per_frame": null,
+      "cpu_ms_per_frame": null
+    },
+    {
+      "scenario": "small",
+      "geometry": "320x240+64+64",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.02,
+      "cpu_pct": 21.7,
+      "cpu_s": 6.52,
+      "kb_per_sec": 30.4,
+      "log_intervals": 0,
+      "log_covered_s": 0,
+      "new_fps": null,
+      "grabs_per_sec": null,
+      "grabs_per_frame": null,
+      "cpu_ms_per_frame": null
+    },
+    {
+      "scenario": "medium",
+      "geometry": "960x540+64+64",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.02,
+      "cpu_pct": 29.0,
+      "cpu_s": 8.7,
+      "kb_per_sec": 40.4,
+      "log_intervals": 0,
+      "log_covered_s": 0,
+      "new_fps": null,
+      "grabs_per_sec": null,
+      "grabs_per_frame": null,
+      "cpu_ms_per_frame": null
+    },
+    {
+      "scenario": "full",
+      "geometry": "2560x1440+0+0",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 37.4,
+      "wall_s": 30.06,
+      "cpu_pct": 6.8,
+      "cpu_s": 2.05,
+      "kb_per_sec": 23.4,
+      "log_intervals": 0,
+      "log_covered_s": 0,
+      "new_fps": null,
+      "grabs_per_sec": null,
+      "grabs_per_frame": null,
+      "cpu_ms_per_frame": null
+    }
+  ]
+}

@@ -83,6 +83,17 @@ RFB_ENC_H264 = 50
 COMPRESS_BASE = -256
 QUALITY_BASE = -32
 
+# RFB fence flow control (TigerVNC common/rfb/{encodings,msgTypes,fenceTypes}.h).
+# The pseudo-encoding advertises support; message 248 carries the fence both ways.
+# The server's H.264 path fences the stream and withholds the next frame until we
+# echo, so echoing here is what lets --fence imitate a real TigerVNC consumer -
+# and pairing it with --slow is what reproduces a slow one.
+RFB_ENC_FENCE = -312
+RFB_MSG_FENCE = 248
+FENCE_FLAG_BLOCK_BEFORE = 0x00000001
+FENCE_FLAG_BLOCK_AFTER = 0x00000002
+FENCE_FLAG_REQUEST = 0x80000000
+
 TIGHT_FILL = 0x08
 TIGHT_JPEG = 0x09
 TIGHT_EXPLICIT_FILTER = 0x04
@@ -166,16 +177,42 @@ def skip_tight_rect(s, w, h, tally=None, dump=None):
     return used
 
 
-def wanted_encodings(tight=False, compress=None, quality=None, h264=False):
+def wanted_encodings(tight=False, compress=None, quality=None, h264=False,
+                     fence=False):
     """Encoding list in preference order, plus the settings pseudo-encodings."""
     encs = [RFB_ENC_TIGHT if tight else RFB_ENC_RAW]
     if h264:
         encs.insert(0, RFB_ENC_H264)
+    if fence:
+        encs.append(RFB_ENC_FENCE)
     if compress is not None:
         encs.append(COMPRESS_BASE + compress)
     if quality is not None:
         encs.append(QUALITY_BASE + quality)
     return tuple(encs)
+
+
+# Set by main() when --fence is given, so read_update echoes ServerFence.
+fence_state = None  # {"echoed": int, "requests": int}
+
+
+def echo_fence(s):
+    """Read a ServerFence body (the type byte is already consumed) and, if it
+    carries the request bit, echo it back as a ClientFence - exactly what
+    TigerVNC's CConnection::fence does. Returns the flags seen."""
+    recv_exact(s, 3)                                    # padding
+    (flags,) = struct.unpack(">I", recv_exact(s, 4))
+    length = recv_exact(s, 1)[0]
+    payload = recv_exact(s, length) if length else b""
+    if flags & FENCE_FLAG_REQUEST and not os.environ.get("RFBCHECK_FENCE_NOECHO"):
+        out_flags = flags & (FENCE_FLAG_BLOCK_BEFORE | FENCE_FLAG_BLOCK_AFTER)
+        s.sendall(struct.pack(">B3xIB", RFB_MSG_FENCE, out_flags, length)
+                  + payload)
+        if fence_state is not None:
+            fence_state["echoed"] += 1
+    if fence_state is not None:
+        fence_state["requests"] += 1
+    return flags
 
 
 def set_encodings(s, encodings=(0,)):
@@ -207,6 +244,9 @@ def read_update(s, tally=None, dump=None):
             recv_exact(s, 3)
             n = struct.unpack(">I", recv_exact(s, 4))[0]
             recv_exact(s, n)
+            continue
+        elif msg == RFB_MSG_FENCE:   # ServerFence: echo it (flow control)
+            echo_fence(s)
             continue
         else:
             raise RuntimeError(f"unexpected server message type {msg}")
@@ -276,6 +316,12 @@ def main():
     ap.add_argument("--h264", action="store_true",
                     help="also advertise encoding 50 and accept H.264 rects "
                          "(sized and skipped, not decoded)")
+    ap.add_argument("--fence", action="store_true",
+                    help="advertise RFB fence support (pseudo-encoding -312) and "
+                         "echo ServerFence messages. With the fence flow-control "
+                         "fix the server withholds the next H.264 frame until this "
+                         "echo arrives, so --fence --slow N imitates a consumer "
+                         "that can take only 1000/N frames per second")
     ap.add_argument("--slow", type=float, default=0.0, metavar="MS",
                     help="sleep MS after each update, to imitate a viewer that "
                          "has to decode. Without this the client is effectively "
@@ -306,9 +352,12 @@ def main():
         print("rfbcheck.py: --compress/--quality only apply to Tight; "
               "add --tight or they are ignored by the server", file=sys.stderr)
 
-    encs = wanted_encodings(args.tight, args.compress, args.quality, args.h264)
+    encs = wanted_encodings(args.tight, args.compress, args.quality, args.h264,
+                            args.fence)
 
-    global h264_sink
+    global h264_sink, fence_state
+    if args.fence:
+        fence_state = {"echoed": 0, "requests": 0}
     if args.dump_h264:
         raw = open(args.dump_h264, "wb")
         meta = open(args.dump_h264 + ".log", "w")
@@ -368,6 +417,10 @@ def main():
               (f"{t_first[1]*1000:.0f} ms" if t_first[1] is not None else "never"))
         print(f"stream: {updates/dt:.1f} updates/s, {rects_n/dt:.1f} rects/s, "
               f"{nbytes/dt/1048576:.2f} MB/s on the wire over {dt:.1f}s")
+        if fence_state is not None:
+            print(f"  fences: {fence_state['echoed']} echoed "
+                  f"({fence_state['echoed']/dt:.1f}/s) of "
+                  f"{fence_state['requests']} received")
         bykind = {k[2:]: v for k, v in tally.items() if k.startswith("B_")}
         if bykind:
             tot = sum(bykind.values()) or 1

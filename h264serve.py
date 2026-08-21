@@ -143,7 +143,85 @@ def send_au(p, width, height, payload, flags):
            + payload)
 
 
+def send_tiles(p, tiles, idx, flags):
+    """One FramebufferUpdate carrying several encoding-50 rects, one per tile.
+
+    Why this exists: a 2560x1440 rect renders BLACK on TigerVNC's Windows
+    decoder, silently, at any frame rate and from any encoder (plan §22). The
+    cutoff measured against the real client is 2048x1152 NV12 = 3,538,944 bytes
+    - the size H264WinDecoderContext gives `decoded_buffer` at construction and
+    never resizes. Splitting the screen into bands that each fit keeps every
+    rect decodable.
+
+    Each tile is a FIXED geometry, so it maps to one stable decoder context.
+    Contexts are keyed by rect (isEqualRect) and capped at MAX_H264_INSTANCES
+    = 64, so a handful of fixed bands is nothing like the churn §3 rejected.
+    """
+    body = b"".join(
+        struct.pack(">HHHHi", t["x"], t["y"], t["w"], t["h"], ENCODING_H264)
+        + struct.pack(">II", len(t["aus"][idx % len(t["aus"])]), flags)
+        + t["aus"][idx % len(t["aus"])]
+        for t in tiles)
+    p.send(struct.pack(">BxH", 0, len(tiles)) + body)
+
+
+# Bytes remaining AFTER the one-byte message type: SetPixelFormat 3 pad + 16
+# format, KeyEvent 7, PointerEvent 5, msg 150 (EnableContinuousUpdates) 9.
 FIXED_LEN = {0: 19, 4: 7, 5: 5, 150: 9}
+
+
+def serve_tiles(args, tiles):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((args.bind, args.port))
+    srv.listen(1)
+    srv.settimeout(args.timeout)
+    print(f"serving {args.width}x{args.height} as {len(tiles)} tiles on "
+          f"{args.bind}:{args.port} (display :{args.port - 5900})")
+    try:
+        conn, addr = srv.accept()
+    except socket.timeout:
+        print(f"no client within {args.timeout}s", file=sys.stderr)
+        return 2
+    finally:
+        srv.close()
+    print(f"connection from {addr[0]}:{addr[1]}")
+    conn.settimeout(60)
+    p = Peer(conn)
+    idx, sent = 0, 0
+    try:
+        handshake(p, args.width, args.height, "h264serve-tiled")
+        while True:
+            msg = p.recv_exact(1)[0]
+            if msg == 2:
+                _pad, count = struct.unpack(">BH", p.recv_exact(3))
+                raw = p.recv_exact(4 * count)
+                encs = [v - 0x100000000 if v >= 0x80000000 else v
+                        for v in struct.unpack(f">{count}I", raw)]
+                print(f"  encoding 50    : "
+                      + (f"offered at position {encs.index(ENCODING_H264)+1} of {len(encs)}"
+                         if ENCODING_H264 in encs else "NOT OFFERED"))
+            elif msg == 3:
+                incremental = p.recv_exact(9)[0]
+                if not incremental:
+                    idx = 0
+                send_tiles(p, tiles, idx, RESET_ALL_CONTEXTS if idx == 0 else 0)
+                idx += 1
+                sent += 1
+                if sent % 30 == 0:
+                    print(f"  sent {sent} frames")
+            elif msg in FIXED_LEN:
+                p.recv_exact(FIXED_LEN[msg])
+            elif msg == 6:
+                _pad, ln = struct.unpack(">3sI", p.recv_exact(7))
+                p.recv_exact(ln)
+            else:
+                print(f"  unknown client message {msg}", file=sys.stderr)
+                break
+    except (EOFError, socket.timeout, BrokenPipeError, ConnectionResetError) as e:
+        print(f"ended after {sent} frames: {e}")
+    conn.close()
+    return 0
 
 
 def main():
@@ -156,7 +234,25 @@ def main():
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--loop", action="store_true", help="restart the stream when it ends")
+    ap.add_argument("--tile", action="append", metavar="FILE:X:Y:W:H", default=[],
+                    help="serve several stacked H.264 rects instead of one, each "
+                         "its own stream and its own decoder context. Repeatable. "
+                         "Use when one full-screen rect exceeds the client's decode "
+                         "buffer and renders black (plan §22).")
     args = ap.parse_args()
+
+    if args.tile:
+        tiles = []
+        for spec in args.tile:
+            fn, x, y, w, h = spec.rsplit(":", 4)
+            t_aus, t_sps, _ = normalise_aus(
+                split_access_units(open(fn, "rb").read()))
+            tiles.append({"x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                          "aus": t_aus})
+            nv12 = int(w) * ((int(h) + 15) // 16 * 16) * 3 // 2
+            print(f"  tile {w}x{h}+{x}+{y}: {len(t_aus)} AUs, "
+                  f"NV12 {nv12:,} B {'OK' if nv12 <= 3538944 else 'OVER THE 3,538,944 B LIMIT'}")
+        return serve_tiles(args, tiles)
 
     raw_aus = split_access_units(open(args.file, "rb").read())
     aus, sps, pps = normalise_aus(raw_aus)
