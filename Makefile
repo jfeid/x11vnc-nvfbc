@@ -6,7 +6,7 @@
 NVFBC_INC ?= ../x11vnc/src/nvfbc
 CFLAGS    ?= -O2 -Wall
 
-BINS = loadgen nvfloor diffcheck pollmode keytarget
+BINS = loadgen nvfloor diffcheck pollmode keytarget nvswitch
 
 all: $(BINS)
 
@@ -23,6 +23,9 @@ diffcheck: diffcheck.c
 	$(CC) $(CFLAGS) -I$(NVFBC_INC) -o $@ $< -ldl
 
 pollmode: pollmode.c
+	$(CC) $(CFLAGS) -I$(NVFBC_INC) -o $@ $< -ldl
+
+nvswitch: nvswitch.c
 	$(CC) $(CFLAGS) -I$(NVFBC_INC) -o $@ $< -ldl
 
 clean:
