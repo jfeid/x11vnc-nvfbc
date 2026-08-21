@@ -26,9 +26,16 @@ while true; do
 	  -rfbauth /etc/x11vnc.passwd \
           -localhost \
 	  -rfbport 5900 \
+	  -nvfbc \
+	  -nvfbc_nocursor \
+	  -nvfbc_push \
 	  -repeat \
 	  -threads \
 	  -clip 2560x1440+0+0 \
+	  -h264 \
+	  -h264_bitrate 20000 \
+	  -h264_fps 30 \
+	  -h264_enter 8 \
 	  -xkb \
 	  -o /var/log/x11vnc.log
 

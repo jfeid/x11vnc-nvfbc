@@ -704,3 +704,42 @@ a populated framebuffer at the moment of exit for the Tight repaint - so the
 copy has to happen on the way out, not per frame.
 
 No CUDA, no session switching, no loss of the diff map.
+
+
+## 15. Entry threshold: 3 was too low, 8 is better (2026-08-21)
+
+§11 derived ~3 screens/s from when Tight stops being affordable across the
+*whole* screen. In use that turned out too eager: quarter-screen video is about
+7.5 screens/s, so it tripped the gate and got encoded as a full 2560x1440 frame
+when Tight only had to touch a quarter of the pixels.
+
+Raised to **8 screens/s**, which sits above quarter-screen video and well below
+a full-page scroll (20-60). Operator confirms scrolling is better. Now in the
+wrapper as `-h264_enter 8`.
+
+This is the dirty-*area* gap §14 flagged: rate alone does not distinguish "a
+small region changing fast" from "the whole screen changing". Raising the
+threshold papers over it adequately for this resolution, but a genuine area
+term would be resolution-independent and would not need retuning if `-clip`
+changes.
+
+### Thresholds are tunable at runtime
+
+`h264_enter`, `h264_exit`, `h264_bitrate` and `h264_fps` are exposed over the
+remote-control interface (`remote.c`). The two thresholds are read on every
+watch_loop tick so they apply immediately:
+
+```
+x11vnc -R h264_enter:8
+x11vnc -Q h264_enter
+```
+
+Bitrate and frame rate are fixed at encoder open, so setting them closes the
+encoder; the next tick that needs it reopens with the new value.
+
+This matters more than it looks: finding the right crossover means trying values
+against real scrolling, and restarting the service drops the session you are
+judging with. Note that x11vnc's remote control goes through a single
+`X11VNC_REMOTE` property on the display, so it cannot be aimed at a particular
+server - it only works with exactly one x11vnc running, as
+`bench/remote-check.sh` already documents.
