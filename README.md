@@ -36,6 +36,8 @@ Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
 | `vncprobe.ps1` | Windows-side RFB probe: keypress -> first update latency over the real transport (tunnel/WLAN/VDSL) |
 | `vncprobe.py` | same probe, run server-side over loopback: isolates the server half from the transport |
 | `rfb-probe.py` | dumps the encoding list a client advertises, in its preference order. Answers "does this viewer support H.264, and under what number" without guessing |
+| `nalscan.py` | structure check on an `rfbcheck.py --dump-h264` pair: SPS first on every access unit, a real IDR behind every `H264_RESET_CONTEXT`, filler bytes, rect geometries. **Checking that some decoder accepts the stream proves nothing** - ffmpeg starts on a non-IDR I-frame and Media Foundation does not (plan §21) |
+| `threadcpu.py` | per-thread CPU split of a running server over a window, with the user/sys and context-switch breakdown. `perf_event_paranoid` is 3 on this machine so there is no profiler; this is how the NVENC CUDA cost was attributed (plan §26-27) |
 | `h264serve.py` | serves a pre-encoded Annex-B file as RFB **encoding 50**. Reference implementation of the H.264 rect format, and the known-good stream to check an encoder against |
 
 Recorded measurements and what each run was: `results/NOTES.md`.
