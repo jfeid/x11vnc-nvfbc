@@ -251,3 +251,27 @@ Two traps these runs exposed, both now fixed in the harness:
 - A bench against a server without `-nvfbc` cannot trip the H.264 gate at all:
   the scan rate is too low, damage coalesces, and the run measures pure Tight
   while looking perfectly healthy. Use `NVFBC=1 ./h264-testserver.sh`.
+
+
+## Phase 3': encode from the NVFBC buffer (2026-08-22)
+
+| file | binary | what it is |
+|---|---|---|
+| `phase3-prod-20260822-160525.json` | `677242268677d06c` | the deployed Phase 3' build against the real TigerVNC client. `full` 130.3% -> 118.8%, captured 27.4 -> 35.9 fps. Compare against `tiled-prod-20260822-005642.json`, but note the two runs are 15 hours apart with different desktop content - the same-rig A/B below is the sound comparison. |
+| `ab-base-20260822-160907.json` | `cd2e5c18` | pre-change `c5c7ddc`, throwaway port 5910, synthetic H.264 consumer, full-screen load. |
+| `ab-phase3-20260822-160956.json` | `be27c29e` | same rig, same minute, Phase 3'. **113.3% -> 104.9% at 33.7 -> 41.6 captured fps: -24% CPU per captured frame.** |
+
+Both A/B legs ran alongside the live server on 5900, which competed equally.
+`measure.py --no-load` samples passively; the load was a separate 2560x1440
+`loadgen` running for the whole leg, so the "idle" scenario label in those two
+files means "the sampling window", not an idle screen.
+
+**The copies are gone, counted not assumed.** The `h264 stats:` line now ends
+with `N fb-skips/s` - scan cycles that skipped filling main_fb - and it equals
+the NVFBC grabs/sec exactly (47 = 47).
+
+**What is left is not ours.** Per-thread split under full load
+(`/proc/PID/task/*` deltas; `perf_event_paranoid` is 3 so no profiler):
+two `cuda-EvtHandlr` threads at ~35% each, x11vnc's own watch_loop at 30.9%.
+The CUDA spin is constant, not per frame - 69.4% at 16.6 delivered fps, 70.7%
+at 7.5. See plan §26.
