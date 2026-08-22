@@ -1689,3 +1689,141 @@ settings:**
 The knobs stay - they cost nothing, they are the right thing to have exposed,
 and `cq` is a legitimate way to *cap* bandwidth if a link ever needs it. They
 are simply not the answer to soft text.
+
+## 26. Phase 3' landed, and it moved the CPU somewhere unexpected (2026-08-22)
+
+§24 is implemented. While H.264 owns every client, `scan_for_updates()` returns
+right after the diff map has marked the tiles and never fills `main_fb`; the
+encoder reads NVFBC's capture buffer where it already is. The copies are gone,
+counted rather than assumed - the `h264 stats:` line now ends with
+`N fb-skips/s`, and it equals the NVFBC grabs/sec exactly.
+
+### What it cost and what it bought
+
+Same-rig A/B, both binaries in turn on a throwaway port with a synthetic H.264
+consumer, identical full-screen load, production untouched on 5900
+(`results/ab-base-20260822-160907.json`, `results/ab-phase3-20260822-160956.json`):
+
+| | base `c5c7ddc` | Phase 3' |
+|---|---|---|
+| CPU | 113.3% | **104.9%** |
+| captured fps | 33.7 | **41.6** |
+| CPU per captured frame | 33.55 ms | **25.35 ms** |
+| H.264 fps delivered | 15.1 | 15.7 |
+| fb-skips/s | - | **47** (= grabs/s) |
+
+On production against the real TigerVNC client, `full` went **130.3% -> 118.8%**
+with captured frames up 27.4 -> 35.9 fps
+(`results/phase3-prod-20260822-160525.json`).
+
+So: **-24% CPU per captured frame, and 24% more frames captured for less total
+CPU.** Delivered frame rate is unchanged because the fence pacing, not the
+server, sets it.
+
+### §24's attribution was wrong by an order of magnitude
+
+§24 predicted `full` would land near 30% and said "anything near 50% means a
+copy is still happening". The copies are provably gone and it landed at 105%.
+The error was in the model, not the measurement: 2 x 14.7 MB per captured frame
+is ~1 GB/s of memcpy, and on this machine that is **~8% of a core, not 108%**.
+The A/B delta (113.3 -> 104.9, at a *higher* capture rate) is exactly that size.
+
+Do not size a memcpy in CPU-percent by intuition again. Measure the bandwidth
+against the machine's actual memcpy rate first.
+
+### Where the CPU actually is: NVENC's CUDA context spins
+
+Per-thread attribution of the running server under full load - `/proc/PID/task/*`
+utime+stime deltas, no profiler needed since `perf_event_paranoid` is 3:
+
+```
+  35.6%  cuda-EvtHandlr        <- one per open tile encoder
+  33.8%  cuda-EvtHandlr
+  30.9%  x11vnc (watch_loop)   <- scan, capture, submit, send: everything we wrote
+   0.4%  libvncserver client threads and helpers
+ 100.8%  TOTAL
+```
+
+**Two thirds of the process is the CUDA driver's own event-handler threads**,
+one per `h264_nvenc` context. And the spin is *constant*, not per frame:
+
+| `-h264_fps` | delivered | cuda-EvtHandlr total |
+|---|---|---|
+| 30 | 16.6 fps | 69.4% |
+| 8 | 7.5 fps | **70.7%** |
+
+Half the frames, identical cost. This also explains §14's puzzling result that
+CPU was flat across 5/15/30 fps - that was never evidence that encoding is
+cheap, it was this polling loop dominating a measurement that could not see
+inside it.
+
+### What that makes the next target
+
+Nothing in x11vnc's own code is now worth optimising for CPU: the whole of it -
+capture, diff map, tick, encode submission, RFB output - is 30.9%. The lever is
+the encoder contexts.
+
+1. **Close the tile encoders when the gate leaves H.264 mode.** They currently
+   stay open for the life of the client, so a desktop that is static - which is
+   most of the time - burns ~70% of a core producing nothing. This is the big
+   one. The cost is `avcodec_open2`, measured at **92-142 ms per tile**, on
+   every gate entry; closing immediately would put a ~250 ms hitch at the start
+   of every scroll. Close after a few seconds of continuous Tight instead.
+2. **Give NVENC a CUDA context created with `CU_CTX_SCHED_BLOCKING_SYNC`.**
+   libavcodec's `h264_nvenc` makes its own context with default (spin) flags and
+   does not expose them, but it will use a context handed to it via
+   `hw_device_ctx`. Untested; this is the route that would fix the cost rather
+   than schedule around it.
+3. Route B of §4 (the NVENC SDK directly) also owns context creation.
+
+### Traps §24 listed, resolved
+
+1. **The cursor: §24's premise was wrong, and nothing had to change.** The
+   cursor is not in `main_fb` and never was in the H.264 stream. libvncserver
+   composites the soft cursor only for a client with
+   `enableCursorShapeUpdates == FALSE`, and the real client takes the
+   pseudo-encoding - the production log says so on every connect:
+   `Enabling full-color cursor updates` / `Enabling X-style cursor updates`.
+   x11vnc's own `draw_cursor()` is `use_multipointer` only. **Decision: the
+   cursor stays client-side, rendered from the RFB cursor pseudo-encoding.**
+2. **Stale framebuffer: real, fixed, and regression-tested.** Every path out of
+   H.264 mode goes through `h264_release_output()`, which drops `exclusive`,
+   refills `main_fb` with `copy_screen()`, then marks. There are four such
+   paths, not the one §24 anticipated: the gate going quiet, the backed-up
+   fallback, the last H.264 client leaving, and `exclusive` dropping without the
+   gate exiting (a second Tight-only viewer joining).
+
+   The test that proves it: paint a solid colour **after** the gate has engaged
+   and leave it static, then stop the driving load. The region changed during
+   the skip and is static afterwards, so the diff map will never re-mark it. A
+   control build with the refill removed repaints the pre-H.264 desktop and the
+   colour is invisible forever:
+
+   | build | R2 reads back as |
+   |---|---|
+   | refill removed (control) | `faf9f7` desktop, **FAIL: 0.00% are ff00ff** |
+   | as shipped | **PASS: 100.00% are ff00ff** |
+3. **Only skip when H.264 owns every client:** gated on `exclusive`, nothing else.
+4. `nvfbc_src_dx/dy` honoured in `nvfbc_served_pixels()`, with a bounds check
+   that returns NULL rather than reading outside the captured frame.
+5. **Framebuffer path still works:** `h264_frame_source()` falls back to
+   `screen->frameBuffer`, and repairs it with `copy_screen()` first if the
+   copies had been skipped.
+6. **Buffer lifetime** is stated in the comment on `nvfbc_served_pixels()`: the
+   next grab is at the top of the next `scan_for_updates()`, and the tick runs
+   after this cycle's grab, inside the send ban.
+7. **`-nvfbc_direct` is a non-issue.** Direct capture is a ToSys optimisation
+   inside the driver; the destination is still `nvfbc_state.frame_buffer`.
+
+Two conditions were added that §24 did not call for, both to avoid a stale
+state with no exit from it: skip only when `nvfbc_scanned` (otherwise
+`scan_display()` derives `tile_count` by comparing against a `main_fb` that has
+stopped tracking the screen, reports everything dirty forever, and the gate can
+never exit), and only when `fs_factor` (otherwise `copy_screen()` is a no-op and
+the refill silently does nothing).
+
+### Wire structure unchanged
+
+`rfbcheck.py --h264 --fence --dump-h264` over 444 access units: every rect
+2560x720, SPS first on all 444, both `H264_RESET_CONTEXT` frames real IDRs,
+**0 bytes of filler**, 0 fence timeouts.

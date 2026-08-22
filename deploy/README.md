@@ -89,12 +89,15 @@ user can reach both.
 | `-threads` | one thread per client |
 | `-repeat -xkb` | keyboard behaviour; see `../keyboard-issues-and-future-work.md` |
 | *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec, which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../../bench/results/wait-defer.md` |
-| *(no `-nvfbc`)* | deliberately unset — see below |
+| `-nvfbc -nvfbc_nocursor -nvfbc_push` | NVIDIA capture instead of MIT-SHM — chosen for smoothness at a known CPU cost, see below |
 
-### Why NVFBC is not enabled
+### Why NVFBC is enabled
 
-The fork's NVFBC capture path works and is maintained, but measured against the
-MIT-SHM path it trades CPU for frame rate rather than beating it outright:
+Re-enabled 2026-08-19. This is a deliberate trade, not a measurement win: the
+benchmarks below still stand, and NVFBC costs more CPU per delivered frame than
+MIT-SHM at every load. It is on because a few days of running on the shm path
+felt sluggish in interactive use, and the extra frames are worth the CPU on this
+machine.
 
 | load | shm | NVFBC | |
 |---|---|---|---|
@@ -104,20 +107,22 @@ MIT-SHM path it trades CPU for frame rate rather than beating it outright:
 
 NVFBC transfers the whole captured region over PCIe every frame regardless of
 how much changed, then copies it twice more; shm reads only the changed tiles.
-The efficiency gap therefore widens with change area. Latency is a wash
-(58.9ms shm against 54.4ms NVFBC with push).
+The efficiency gap therefore widens with change area. Measured latency is a wash
+(58.9ms shm against 54.4ms NVFBC with push), so the perceived smoothness comes
+from the higher frame rate, not from lower latency.
 
 Full numbers: `../../bench/results/stock-comparison.md`.
 
-**To switch back to NVFBC**, add `-nvfbc -nvfbc_nocursor -nvfbc_push` to the
-invocation. Do not instead append `-nonvfbc` to an NVFBC-enabled line: it works
-(later flags win) but reads as self-contradictory and silently flips meaning if
-the flags are ever reordered.
+**To switch back to MIT-SHM**, delete the three `-nvfbc*` lines from the
+invocation. Do not instead append `-nonvfbc`: it works (later flags win) but
+reads as self-contradictory and silently flips meaning if the flags are ever
+reordered.
 
-Note the shm path depends on the segment-handover fix in `f3f28ad` when the
-service runs as root against a user-owned X server — without it x11vnc aborts
-at startup with `X_ShmAttach BadAccess`, and `-noshm` is far slower than either
-option here.
+The shm path is still the fallback — NVFBC disables itself if the driver or
+`libnvidia-fbc.so` is missing — and that fallback depends on the segment-handover
+fix in `f3f28ad` when the service runs as root against a user-owned X server:
+without it x11vnc aborts at startup with `X_ShmAttach BadAccess`, and `-noshm`
+is far slower than either option here.
 
 ## Verifying what is actually running
 
