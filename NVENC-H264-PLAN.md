@@ -1455,3 +1455,169 @@ the server to detect it.
 That is the deeper problem with encoding 50 and it is unchanged by this fix:
 **the protocol gives the server no way to learn that the client failed to
 display a rect.** Everything in §17-§22 followed from that single gap.
+
+### Deployed to 5900, full bench (2026-08-22)
+
+Tiled build installed as `/usr/bin/x11vnc` (`d2ca7a61…`), production flags
+unchanged - `-clip 2560x1440+0+0` makes tiling engage by itself. Same bench,
+same client, against the pre-fix `hybrid-flowctl` run of 21:03:
+
+| scenario | KB/s before | KB/s after | | CPU before | CPU after |
+|---|---|---|---|---|---|
+| idle | 5.8 | 25.3 | *(uncontrolled)* | 2.3% | 3.4% |
+| small | 6.3 | 6.4 | +2% | 36.0% | 34.8% |
+| medium | 1559.8 | **176.7** | **-89%** | 43.7% | 42.3% |
+| full | 1236.8 | **371.5** | **-70%** | 85.2% | **130.3%** |
+
+`idle` is the uncontrolled scenario and this session's own terminal output was
+live damage on the desktop; do not read it as a regression.
+
+**Bandwidth is now well inside the link.** `medium` fell 8.8x. Against the Tight
+baseline of §14 (25.79 MB/s under motion) the hybrid now costs ~0.36 MB/s at
+`full` - roughly 70x less, where the original H.264 figure was 12x less.
+
+**The fence gate turned into the adaptive rate §17 asked for.** At a 30 fps
+target the counters read `11-12 fps sent, 0 timeouts, 279-306 held` per 10 s:
+two thirds of encode attempts are declined because the client has not yet
+acked, so the server settles at the ~11-12 fps this client can actually take
+for 2560x1440 in two tiles. Nobody configured that number; it is measured every
+frame.
+
+**CPU is the open cost.** `full` went 85.2% -> 130.3%, and the capture model
+attributes only 13.3 points to capture, so the rest is scan/copy plus two NVENC
+sessions. That makes §14's Phase 3' the obvious next work: while H.264 owns the
+output, x11vnc's per-tile compare and copy exist only to find damage for Tight,
+which is not being used. Skipping them, and pointing the encoders at NVFBC's
+own buffer, targets exactly the part of the 130% that is now waste.
+
+## 24. Phase 3' implementation brief — encode from the NVFBC buffer (2026-08-22)
+
+Written to be picked up cold in a new session. Everything below was verified
+against the tree at `fb6536c`.
+
+### Why: measured attribution, not assumed
+
+From the deployed run (`bench/results/tiled-prod-20260822-005642.json`, `full`):
+
+```
+total CPU               130.3%
+NVFBC capture            13.3%   from the machine's measured NVFBC floor
+NVENC encode, 2 tiles     9.3%   measured standalone, see below
+UNACCOUNTED             107.7%
+```
+
+The encode figure is measured, not modelled: encoding 2560x720 with the
+production settings costs **3.87 ms of CPU per frame** (differential of two
+ffmpeg runs, source-only vs source+encoder, 150 frames), so both tiles at the
+~12 fps this client accepts come to ~9% of one core. `nvidia-smi` reports the
+**encoder block at 32%** during that run. The GPU is doing the encoding; the
+CPU is not where the video work happens.
+
+### Correction to §14: the compare is already gone
+
+§14 said the residual was "scan/compare/copy" and that "per-tile comparison
+exists to find damage for Tight". The comparison is in fact **already skipped**
+whenever NVFBC's diff map is active: `scan.c:3605-3619` calls
+`nvfbc_mark_tiles_from_diffmap()`, which fills `tile_has_diff[]` from the GPU
+diff map and sets `nvfbc_scanned = 1`, bypassing `scan_display()` entirely.
+
+**The target is the copy, and there are two of them per dirty tile:**
+
+1. `copy_tile()` -> `copy_image(tile_row[nt], ...)` (`scan.c:1913`) copies
+   NVFBC's buffer into an XImage (`xwrappers.c:525-541`).
+2. `copy_tile()` then memcpy's that XImage into `main_fb`.
+
+At `full` every tile is dirty, so that is 2 x 14.7 MB per captured frame; at
+27.4 captured fps, **~800 MB/s of CPU memory traffic**. That is the 107.7%, and
+in H.264 mode the destination is only read by our own encoder.
+
+### The change
+
+While `h264_owns_output()`, skip the tile copies and point each tile's encoder
+straight at NVFBC's buffer.
+
+Anchors:
+
+| what | where |
+|---|---|
+| NVFBC's own BGRA system buffer | `xwrappers.c:63` `nvfbc_frame_buffer`, refreshed at `:300`/`:310` |
+| stride | `xwrappers.c:498` `src_stride = width * 4` |
+| served -> frame offset | `xwrappers.c:74`, set at `:238` (`nvfbc_src_dx/dy`) |
+| access lock | `NVFBC_LOCK` / `NVFBC_UNLOCK` |
+| damage suppression guard | `scan.c:1778` in `mark_rect_as_modified()` |
+| tile copy to skip | `scan.c` `copy_tiles()` / `copy_tile()` |
+| tick ordering | `screen.c:4853-4863`, inside the send ban |
+| current encoder input | `h264_stream.c`, `screen->frameBuffer + y * paddedWidthInBytes` |
+
+Suggested new accessor in `xwrappers.c`, so `h264_stream.c` never touches NVFBC
+internals:
+
+```c
+/* Base of the SERVED region inside NVFBC's capture buffer, or NULL if NVFBC
+   is not active or the last grab failed.  Valid until the next grab. */
+const uint8_t *nvfbc_served_pixels(int *stride);
+```
+
+Each tile then encodes from `base + tile_y * stride`, exactly as it does today
+from the framebuffer - the band layout does not change.
+
+### Traps, in the order they will bite
+
+1. **The cursor disappears.** `h264_frame_tick()` deliberately runs *after*
+   `check_cursor_changes()` (`screen.c:4856-4862`), which draws the soft cursor
+   into the framebuffer - so the cursor is in the H.264 stream today. NVFBC
+   captures with `-nvfbc_nocursor`, so encoding from its buffer loses the cursor
+   during motion. Decide explicitly: composite it into a scratch copy of the
+   affected band, leave it to the RFB cursor pseudo-encoding, or accept it.
+   Do not discover this from a bug report.
+2. **The framebuffer goes stale, and the exit repaint needs it.** Leaving H.264
+   marks the whole screen for Tight (`h264_update_gate()`). If the copies were
+   skipped for the whole H.264 period, `main_fb` holds pixels from the moment
+   the gate engaged, and Tight will faithfully repaint that stale image. Call
+   `copy_screen()` on the exit path *before* `mark_rect_as_modified()`. This is
+   the same class of bug as §13's swallowed exit repaint.
+3. **Only skip when H.264 owns every client.** `h264_owns_output()` is already
+   exactly that condition (`exclusive`); gate the skip on it and nothing else.
+4. **Honour `nvfbc_src_dx/dy`.** They are 0 in this deployment because `-clip
+   2560x1440+0+0` matches tracked output DP-4, so a bug here will not show on
+   this machine and will corrupt any other geometry.
+5. **Keep the framebuffer path working.** Without NVFBC (X11 capture) the tick
+   must still encode from `screen->frameBuffer`. Two sources, chosen per tick.
+6. **Buffer lifetime.** `nvfbc_frame_buffer` is overwritten by the next grab.
+   The tick runs in `watch_loop` after the grab and inside the send ban, so it
+   is safe today - state that assumption in a comment rather than relying on it
+   silently.
+7. **`-nvfbc_direct`.** Direct capture may change buffer semantics; check
+   `nvfbc_last_frame.is_direct_capture` before assuming.
+
+### Also in scope: a quality target (`cq`)
+
+The operator reports text is "a bit soft during motion" - acceptable, but worth
+fixing while the encoder is open on the bench. VBR currently produces only
+**1.6-3.2 Mbps against the 20 Mbps ceiling**, so roughly 10x of headroom is
+unspent; quality costs GPU, not CPU, and barely moves the link at these rates.
+
+Add `-h264_cq N` -> `av_opt_set(ctx->priv_data, "cq", ...)` alongside `rc=vbr`
+in `h264_enc_open()`. Lower is better quality; start around 19-23 and sweep.
+Expose it over remote control next to `h264_bitrate`/`h264_fps` in `remote.c`
+(it is fixed at encoder open, so it must call `h264_encoders_reset()`), because
+judging softness needs live A/B against real content, not a restart per value.
+
+### Verification
+
+- `bench/measure.py --port <test port> --duration 30` and compare `full`
+  against the 130.3% baseline. Expect capture ~13% + encode ~9% + a small
+  residual; anything near 50% means a copy is still happening.
+- Confirm the picture still tracks the load on the real client, and that the
+  **gate exit repaint is crisp** - that is trap 2 showing up.
+- `rfbcheck.py --h264 --fence --dump-h264` plus `nalscan` to confirm the wire
+  structure is unchanged: 2 tiles of 2560x720, real IDR on every
+  `H264_RESET_CONTEXT` frame, no filler.
+- Watch `h264 stats:` for `timeouts` staying 0; a rise means the encoder input
+  changed under the client.
+
+### Done when
+
+`full` CPU is materially below 130%, the picture is unchanged on the real
+client, the exit repaint is clean, and the cursor decision is made and written
+down.
