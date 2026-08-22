@@ -1801,8 +1801,7 @@ Route B of §4 (the NVENC SDK directly) also owns context creation.
 
 **What is NOT worth doing:** closing the tile encoders when the gate returns to
 Tight. That was the first recommendation written here and the measurement kills
-it - idle open encoders cost 0.3% each, so it would buy ~0.6% at the price of a
-~250 ms `avcodec_open2` hitch (92-142 ms per tile) at the start of every scroll.
+it - see the note at the end of §27 for the numbers after the shared context.
 
 One caveat on the instrumentation: `nvidia-smi --query-gpu=utilization.encoder`
 reported 0% in every leg, including ones demonstrably encoding. Do not use that
@@ -1940,3 +1939,42 @@ thread costs ~1%.
 Two tools this needed are now in `bench/`: `threadcpu.py` (per-thread CPU with
 the user/sys and context-switch split) and `nalscan.py` (the access-unit
 structure check §21 and §26 describe but which had never been checked in).
+
+
+### Closing the encoders when idle: still not a CPU measure (2026-08-22)
+
+Re-measured after the shared context, since the earlier answer was based on the
+per-encoder world. Client attached, screen static, against a control that never
+engaged the gate (`-h264_enter 100`, because at `-h264_enter 1` ordinary desktop
+activity trips it and the control is not a control):
+
+| | encoders never opened | encoders open, screen static |
+|---|---|---|
+| CUDA driver threads | 0 | 1 |
+| that thread's CPU | - | **0.2%** |
+| process total | 9.2% | 8.8% |
+| VRAM | 107 MiB | **341 MiB** |
+
+**CPU: nothing to win.** 0.2%, below the noise - the totals come out *lower* in
+the encoders-open leg, which is desktop activity, not the encoders. The shared
+context already took everything this idea was once supposed to buy.
+
+What remains are resources another application might want:
+
+- **VRAM, at most 234 MiB** - and less in practice. The shared CUDA context is
+  created on the first encoder open and lives for the process lifetime, so
+  closing the encoders would release the two session buffers but not the
+  context. Splitting those needs a build that closes one and keeps the other;
+  234 MiB is the upper bound, not the saving.
+- **Two NVENC sessions held open.** The more plausible argument: OBS, game
+  capture or a browser doing WebRTC encode contend for the driver's concurrent
+  session cap. Not tight on this driver - the 4-tile test opened four.
+
+The cost side is cheaper than it was: reopening both tiles is ~60 ms now (30 ms
+each) rather than ~250 ms, and it adds nothing client-side, since gate entry
+already sets `need_idr` and the client rebuilds its decoder on every entry.
+
+**If it is ever wanted, it is for the session/VRAM reason and the trigger should
+be a long idle - 30-60 s of continuous Tight, not "a few seconds"** - so
+ordinary scrolling never pays the reopen while a machine left alone releases the
+resources. That is a different feature with a different justification.
