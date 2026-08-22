@@ -224,3 +224,30 @@ recommendation to try quality 7, or 6, stands; 5 does not.
 It also means the Tight path this server currently serves is **full-chroma**,
 which is the baseline any H.264 comparison has to be made against. See
 `docs/NVENC-H264-PLAN.md` §10.
+
+## H.264 tiling: the freeze fix and its measurements (2026-08-22)
+
+Context: `docs/NVENC-H264-PLAN.md` §22-§25. The viewer "freeze" under sustained
+motion was never a freeze - TigerVNC silently refuses to display any H.264 rect
+above ~2.36 Mpx, so the full-screen 2560x1440 rect never painted at all and what
+was on screen was the last Tight frame. Fixed by splitting the served region
+into two 2560x720 tiles.
+
+| file | what it was |
+|---|---|
+| `fence-5906-*`, `fence-nvfbc-*`, `fence-rerun-*` | RFB fence flow control on a throwaway port, before the root cause was known. The fence work is real and kept, but it did **not** fix the freeze. |
+| `fps5-test-*` | `-h264_fps 5` - the client-saturation theory, refuted: it froze identically. |
+| `logrun-*`, `logcapture-*` | freezes reproduced deliberately while the Windows client wrote `C:\temp\vncviewer.log`. The log was silent, which is itself the result: the H.264 path has no logger at all. |
+| `idrfix-*` | after `forced-idr` and VBR, still single-rect - still froze. |
+| `tiled-*` | first tiled build, on the throwaway port. Played through both gate entries. |
+| **`tiled-prod-20260822-005642.json`** | **the reference run.** Tiled build deployed to 5900, full bench, operator watching. `medium` 1559.8 -> 176.7 KB/s (-89%), `full` 1236.8 -> 371.5 KB/s (-70%), `full` CPU 85.2% -> 130.3%. This is the baseline Phase 3' has to beat. |
+| `cqsweep_{0,15,19,23,27}-*` | `-h264_cq` swept live on 5900 under a full-screen blit load. cq scales bandwidth 21.8 -> 4.6 Mbps; CPU flat at 51-53% throughout, i.e. quality costs the GPU, not the CPU. It does **not** improve text - see §25. |
+
+Two traps these runs exposed, both now fixed in the harness:
+
+- `measure.py` took the first `pgrep x11vnc` hit and sampled `:5900` regardless.
+  With a test server running alongside the live one it silently measured the
+  wrong process. Use `--port`.
+- A bench against a server without `-nvfbc` cannot trip the H.264 gate at all:
+  the scan rate is too low, damage coalesces, and the run measures pure Tight
+  while looking perfectly healthy. Use `NVFBC=1 ./h264-testserver.sh`.
