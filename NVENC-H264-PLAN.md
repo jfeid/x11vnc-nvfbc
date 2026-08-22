@@ -1860,3 +1860,72 @@ the refill silently does nothing).
 `rfbcheck.py --h264 --fence --dump-h264` over 444 access units: every rect
 2560x720, SPS first on all 444, both `H264_RESET_CONTEXT` frames real IDRs,
 **0 bytes of filler**, 0 fence timeouts.
+
+## 27. The blocking-sync context: hypothesis refuted, but it found the real fix (2026-08-22)
+
+§26 proposed giving `h264_nvenc` a CUDA context created with
+`CU_CTX_SCHED_BLOCKING_SYNC` so the driver thread would sleep on an interrupt
+instead of polling. Implemented as `-h264_cuda_sched`, which builds one context
+up front and hands it to every tile encoder through `hw_device_ctx`
+(`AV_CUDA_USE_CURRENT_CONTEXT`; libcuda is `dlopen`ed, so the build gains no
+CUDA dependency and any failure falls back to libavcodec's own context).
+
+Swept under the full-screen load, 2 tiles:
+
+| `-h264_cuda_sched` | driver threads | total CPU | delivered | GPU | wakeups/s |
+|---|---|---|---|---|---|
+| `auto` (libavcodec's own, one per encoder) | 2 | **105.3%** | 15.7 fps | 75% | 43,000 each |
+| `spin` (shared) | 1 | **69.5%** | 16.1 fps | 76% | 45,700 |
+| `yield` (shared) | 1 | **70.8%** | 15.7 fps | 75% | 46,200 |
+| `blocking` (shared) | 1 | **69.9%** | 15.6 fps | 76% | 45,300 |
+
+**The scheduling flag is inert.** All three shared modes poll at the same rate;
+`CU_CTX_SCHED_BLOCKING_SYNC` does not change what `cuda-EvtHandlr` does. That
+flag governs how a thread calling `cuCtxSynchronize` waits, not the driver's
+own event-handler thread, which polls regardless.
+
+**What actually cost 36 points was one context per encoder.** libavcodec creates
+a CUDA context per `AVCodecContext`, each with its own polling thread, so the
+cost scaled with the tile count - and the tile count exists only because the
+client cannot decode a rect larger than 2.36 Mpx (§22). Sharing one context
+collapses N polling threads into one. Delivered frame rate is unchanged or
+slightly better, so nothing serialises behind the shared stream.
+
+**Default is now `blocking`** - i.e. one shared context. `auto` restores the old
+per-encoder behaviour. The flag names are kept because they cost nothing and
+another driver may not be indifferent to them.
+
+### Where that leaves `full`
+
+    130.3%   before Phase 3'  (production, real client)
+    118.8%   Phase 3'         (production, real client)
+    105.3%   Phase 3'         (test rig, auto)
+     69.4%   + shared context (test rig, default)
+
+x11vnc's own thread is 30.8% of that 69.4%; the remaining 37.8% is the single
+driver thread, and it is still 29.2% *system* time at 45,000 wakeups/s. Removing
+it entirely would need NVENC to stop polling, which nothing in the libavcodec
+API reaches - Route B of §4 (the SDK directly) is the only remaining lever, and
+it is not obviously worth it for one thread.
+
+Remember §26's caveat: this is the synthetic full-screen load, where the load
+generator itself drives the GPU to 76%. Under ordinary desktop motion the same
+thread costs ~1%.
+
+### Verified with the shared context
+
+- Three gate entries and exits, encoders closed and reopened each time: **one**
+  context created, reused throughout.
+- Four tiles (`-h264_tile_pixels 1000000`) on the one context: **one** driver
+  thread, not four.
+- The Phase 3' exit repaint still lands (`00ddaa` region reads back 100%).
+- Wire structure unchanged: 632 access units, all SPS-first, both
+  `H264_RESET_CONTEXT` frames real IDRs, 0 filler, every rect 2560x720.
+- A bad mode name (`-h264_cuda_sched banana`) logs and falls back to `auto`.
+- `avcodec_open2` gets *faster* after the first tile - 216/230 ms against
+  483/557 ms - because the context already exists. That halves the gate-entry
+  hitch as a side effect.
+
+Two tools this needed are now in `bench/`: `threadcpu.py` (per-thread CPU with
+the user/sys and context-switch split) and `nalscan.py` (the access-unit
+structure check §21 and §26 describe but which had never been checked in).
