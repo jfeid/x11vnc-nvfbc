@@ -1897,10 +1897,21 @@ another driver may not be indifferent to them.
 
 ### Where that leaves `full`
 
-    130.3%   before Phase 3'  (production, real client)
-    118.8%   Phase 3'         (production, real client)
-    105.3%   Phase 3'         (test rig, auto)
-     69.4%   + shared context (test rig, default)
+Confirmed on production against the real client after deploying, same
+four-scenario `measure.py` invocation as every earlier production run
+(`results/sharedctx-prod-20260822-165741.json`):
+
+    130.3%   before Phase 3'   -> 47.86 ms per captured frame
+    118.8%   Phase 3'          -> 33.15 ms
+     72.8%   + shared context  -> 22.49 ms
+
+**-44% CPU, -53% per captured frame, wire unchanged at ~390 KB/s.** `medium`
+went 42.3% -> 33.0%, `small` is flat within noise, and `idle` is uncontrolled
+(it draws nothing, so it measures whatever the desktop was doing - 25.3, 12.5
+and 70.4 KB/s across the three runs).
+
+The gate held one continuous H.264 period across the whole `full` window,
+0 fence timeouts, every frame encoded direct from the NVFBC buffer.
 
 x11vnc's own thread is 30.8% of that 69.4%; the remaining 37.8% is the single
 driver thread, and it is still 29.2% *system* time at 45,000 wakeups/s. Removing
