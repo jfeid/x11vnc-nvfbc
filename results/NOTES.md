@@ -273,5 +273,19 @@ the NVFBC grabs/sec exactly (47 = 47).
 **What is left is not ours.** Per-thread split under full load
 (`/proc/PID/task/*` deltas; `perf_event_paranoid` is 3 so no profiler):
 two `cuda-EvtHandlr` threads at ~35% each, x11vnc's own watch_loop at 30.9%.
-The CUDA spin is constant, not per frame - 69.4% at 16.6 delivered fps, 70.7%
-at 7.5. See plan §26.
+They are NVENC's, one per tile encoder, and they sit in a `poll()` loop on the
+NVIDIA fd - 42,000 wakeups/s each, 78% system time - waiting for the GPU.
+
+**That cost tracks GPU wait time, not frames, and the `full` number is inflated
+by the benchmark itself:**
+
+| load | GPU | cuda-EvtHandlr each | delivered |
+|---|---|---|---|
+| encoders open, nothing submitted | 8% | 0.3% | 0 fps |
+| 640x480@60 | 35% | 1.0% | 17.3 fps |
+| full screen | 76% | 35% | 15.7 fps |
+
+The middle row delivers *more* frames for 1%. Under `full` the load generator is
+itself repainting 2560x1440 at 28 fps, so about half the GPU load is the bench.
+See plan §26; `nvidia-smi --query-gpu=utilization.encoder` reads 0% on this
+driver even while encoding, so do not use it.
