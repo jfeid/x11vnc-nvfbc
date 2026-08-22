@@ -289,3 +289,43 @@ The middle row delivers *more* frames for 1%. Under `full` the load generator is
 itself repainting 2560x1440 at 28 fps, so about half the GPU load is the bench.
 See plan §26; `nvidia-smi --query-gpu=utilization.encoder` reads 0% on this
 driver even while encoding, so do not use it.
+
+
+## Shared CUDA context, on production (2026-08-22)
+
+`sharedctx-prod-20260822-165741.json`, binary `4445df61`, same four-scenario
+`measure.py` invocation as the two runs above, same real TigerVNC client:
+
+| scenario | before Phase 3' | Phase 3' | + shared context |
+|---|---|---|---|
+| idle | 3.4% | 10.1% | 11.7% |
+| small | 34.8% | 30.4% | 34.3% |
+| medium | 42.3% | 33.3% | 33.0% |
+| **full** | **130.3%** | **118.8%** | **72.8%** |
+
+`full` in detail:
+
+| | before | Phase 3' | + shared |
+|---|---|---|---|
+| CPU | 130.3% | 118.8% | **72.8%** |
+| captured fps | 27.4 | 35.9 | 32.5 |
+| CPU per captured frame | 47.86 ms | 33.15 ms | **22.49 ms** |
+| wire | 371.5 KB/s | 400.8 KB/s | 386.8 KB/s |
+
+**-44% CPU and -53% CPU per captured frame against the pre-Phase-3' baseline**,
+with the wire unchanged. The gate held one continuous H.264 period across the
+whole `full` window (16:56:42 -> 16:57:43), 0 fence timeouts, every frame
+encoded direct from the NVFBC buffer.
+
+Two things not to read too much into:
+
+- **`idle` is uncontrolled and went up.** It draws nothing, so it measures
+  whatever the operator's desktop happened to be doing; `kb_per_sec` was 25.3,
+  12.5 and 70.4 across the three runs, which is the tell. Do not compare it.
+- **`loadgen_achieved_fps` rose** (28.2 / 28.0 / 32.4). The server leaving more
+  CPU and GPU headroom lets the load generator itself run faster, so the last
+  run was working slightly harder for its 72.8%.
+
+`avcodec_open2` is now 30-31 ms per tile against 92-142 ms before, because
+creating the CUDA context is no longer part of it - the gate-entry hitch is
+mostly gone as a side effect.
