@@ -1621,3 +1621,71 @@ judging softness needs live A/B against real content, not a restart per value.
 `full` CPU is materially below 130%, the picture is unchanged on the real
 client, the exit repaint is clean, and the cursor decision is made and written
 down.
+
+## 25. Encoder quality knobs swept: none of them help (2026-08-22)
+
+`-h264_cq`, `-h264_preset` and `-h264_tune` were added so the encoder could be
+tuned without a rebuild. Swept against real content, **all three are inert for
+picture quality, and the defaults are already the best available.** Recorded so
+nobody spends another evening on them.
+
+### Live, on the deployed server (full-screen blit load, 30 s each)
+
+| cq | KB/s delivered | Mbps | CPU |
+|---|---|---|---|
+| off | 2724.6 | 21.8 | 51.0% |
+| 27 | 576.0 | 4.6 | 53.0% |
+| 23 | 798.6 | 6.4 | 52.6% |
+| 19 | 1074.8 | 8.6 | 53.2% |
+| 15 | 1338.3 | 10.7 | 52.6% |
+
+CPU is flat across every setting: **quality costs the GPU, not the CPU.**
+
+### Offline, against real desktop text in motion
+
+Scrolling a real screenshot, SSIM against a lossless reference - the case the
+operator described as "a bit soft during motion":
+
+| setting | Mbps | SSIM |
+|---|---|---|
+| **vbr default (cq off)** | **1.75** | **0.95829** |
+| cq 15 | 1.75 | 0.95829 |
+| cq 17 | 1.51 | 0.95793 |
+| cq 19 | 1.42 | 0.95752 |
+| cq 23 | 1.19 | 0.95638 |
+| cq 27 | 0.99 | 0.95423 |
+| preset p1 … p7 | 1.73-1.97 | 0.95826-0.95830 |
+| tune ll / ull / hq | 1.75 | 0.95829 (identical) |
+| constqp qp=8 | 2.51 | 0.95848 |
+
+Three findings:
+
+1. **cq only subtracts.** It is a quality *target* with the bitrate as ceiling,
+   so on content the encoder already handles well it can only lower spending.
+   cq 15 converges exactly to the default; everything above it is worse.
+2. **preset and tune are noise.** p1 to p7 spans 0.00004 SSIM. ll/ull/hq are
+   identical to five decimal places. p4/ll are fine.
+3. **More bits do not help.** `constqp qp=8` spends **43% more bandwidth for
+   +0.19 milli-SSIM**. Rate control is not the constraint.
+
+### So the softness is the 4:2:0 chroma floor, as §10 measured
+
+Quality plateaus at ~0.958 no matter how many bits are thrown at it, which is
+the same shape §10 found: 4:2:0 at 100 Mbps plateaus at 0.986 while 4:4:4
+reaches 0.998, and "that residual cannot be bought back with bitrate". This
+sweep confirms it end to end on real content with the real encoder settings.
+
+4:4:4 is not available: TigerVNC's Media Foundation path requests NV12 output
+and will not decode it (§1).
+
+**The only remaining levers for text crispness are structural, not encoder
+settings:**
+
+- The hybrid gate already keeps text on Tight while the screen is static, which
+  is when text is actually read. Softness appears only during motion.
+- `-h264_enter` trades bandwidth for crispness: raising it keeps more content on
+  4:4:4 Tight at the cost of Tight's bandwidth under motion.
+
+The knobs stay - they cost nothing, they are the right thing to have exposed,
+and `cq` is a legitimate way to *cap* bandwidth if a link ever needs it. They
+are simply not the answer to soft text.
