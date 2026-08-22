@@ -1731,50 +1731,83 @@ The A/B delta (113.3 -> 104.9, at a *higher* capture rate) is exactly that size.
 Do not size a memcpy in CPU-percent by intuition again. Measure the bandwidth
 against the machine's actual memcpy rate first.
 
-### Where the CPU actually is: NVENC's CUDA context spins
+### Where the CPU actually is: NVENC's CUDA threads poll for GPU completion
 
 Per-thread attribution of the running server under full load - `/proc/PID/task/*`
-utime+stime deltas, no profiler needed since `perf_event_paranoid` is 3:
+utime/stime deltas plus `voluntary_ctxt_switches`, no profiler needed since
+`perf_event_paranoid` is 3:
 
 ```
-  35.6%  cuda-EvtHandlr        <- one per open tile encoder
-  33.8%  cuda-EvtHandlr
-  30.9%  x11vnc (watch_loop)   <- scan, capture, submit, send: everything we wrote
-   0.4%  libvncserver client threads and helpers
- 100.8%  TOTAL
+     tot     user      sys   volsw/s  thread
+   36.0%     8.1%    27.9%    41929   cuda-EvtHandlr     <- one per open tile encoder
+   34.4%     7.4%    27.0%    41185   cuda-EvtHandlr
+   31.6%    27.7%     3.9%      240   x11vnc (watch_loop)
+  102.7%  TOTAL
 ```
 
-**Two thirds of the process is the CUDA driver's own event-handler threads**,
-one per `h264_nvenc` context. And the spin is *constant*, not per frame:
+**Two thirds of the process is the CUDA driver's own threads, and it is almost
+all system time.** 42,000 voluntary context switches per second per thread, at
+15.7 encoded fps - roughly 2,700 wakeups per encoded frame. `/proc/TID/syscall`
+says syscall **7 (`poll`)** and `/proc/TID/wchan` says **`do_sys_poll`**: the
+threads sit in a `poll()` loop on the NVIDIA device fd waiting for the GPU to
+signal completion. The cost is syscall and scheduler overhead, not computation.
 
-| `-h264_fps` | delivered | cuda-EvtHandlr total |
-|---|---|---|
-| 30 | 16.6 fps | 69.4% |
-| 8 | 7.5 fps | **70.7%** |
+### It scales with GPU wait time, not with frames
 
-Half the frames, identical cost. This also explains §14's puzzling result that
-CPU was flat across 5/15/30 fps - that was never evidence that encoding is
-cheap, it was this polling loop dominating a measurement that could not see
-inside it.
+Same 2-tile production config, three loads, thread CPU and GPU utilisation
+sampled together:
+
+| load | GPU | cuda-EvtHandlr each | volsw/s each | delivered |
+|---|---|---|---|---|
+| none (encoders open, nothing submitted) | 8% | **0.3%** | 100 | 0 fps |
+| 640x480@60 | 35% | **1.0%** | 350 | 17.3 fps |
+| full screen | 76% | **35%** | 41,500 | 15.7 fps |
+
+The middle row is the important one: **the same encoders, delivering *more*
+frames than the full-screen case, cost 1% instead of 35%.** What changed is how
+long the GPU takes to finish, and the poll loop runs for as long as that takes.
+The tile count tracks the thread count exactly - forcing 4 tiles
+(`-h264_tile_pixels 1000000`) produces 4 such threads - and a server with
+`-nvfbc` but no `-h264` has none at all, so they belong to NVENC, not NVFBC.
+
+Two corrections to what was first written here, both from the measurement above:
+
+- **They do not spin unconditionally.** Encoders left open with nothing being
+  submitted cost 0.3% each. The earlier reading of "constant, not per frame"
+  came from comparing `-h264_fps 30` against `-h264_fps 8` under the *same*
+  full-screen load: that holds GPU busy-time roughly constant, because most of
+  it is the load generator and NVFBC's full-frame DMA rather than our encodes,
+  so halving the frame count did not shorten the waits. It is invariant to
+  frame rate, not to GPU load. §14's flat 5/15/30 fps result is the same effect.
+- **The 70% is a property of this benchmark, not of the deployment.** Under
+  `full`, the load generator is itself repainting 2560x1440 at 28 fps; GPU goes
+  35% -> 76% between the two loaded legs and roughly half of that is the
+  benchmark. A real desktop under ordinary motion looks like the middle row.
+  Something genuinely GPU-heavy - a game, a 3D application - would look like
+  the bottom one.
 
 ### What that makes the next target
 
-Nothing in x11vnc's own code is now worth optimising for CPU: the whole of it -
-capture, diff map, tick, encode submission, RFB output - is 30.9%. The lever is
-the encoder contexts.
+Nothing in x11vnc's own code is now worth optimising for CPU: capture, diff map,
+tick, encode submission and RFB output together are 31%.
 
-1. **Close the tile encoders when the gate leaves H.264 mode.** They currently
-   stay open for the life of the client, so a desktop that is static - which is
-   most of the time - burns ~70% of a core producing nothing. This is the big
-   one. The cost is `avcodec_open2`, measured at **92-142 ms per tile**, on
-   every gate entry; closing immediately would put a ~250 ms hitch at the start
-   of every scroll. Close after a few seconds of continuous Tight instead.
-2. **Give NVENC a CUDA context created with `CU_CTX_SCHED_BLOCKING_SYNC`.**
-   libavcodec's `h264_nvenc` makes its own context with default (spin) flags and
-   does not expose them, but it will use a context handed to it via
-   `hw_device_ctx`. Untested; this is the route that would fix the cost rather
-   than schedule around it.
-3. Route B of §4 (the NVENC SDK directly) also owns context creation.
+**The lever is the CUDA context's completion-wait mode.** A context created with
+`CU_CTX_SCHED_BLOCKING_SYNC` sleeps on an interrupt instead of polling, which
+would trade a little wake-up latency for the whole of that 70% under GPU load.
+libavcodec's `h264_nvenc` creates its own context with default flags and does
+not expose them, but it will use one handed to it through `hw_device_ctx`, so
+the route is to create the CUDA context in the fork and pass it in. Untested.
+Route B of §4 (the NVENC SDK directly) also owns context creation.
+
+**What is NOT worth doing:** closing the tile encoders when the gate returns to
+Tight. That was the first recommendation written here and the measurement kills
+it - idle open encoders cost 0.3% each, so it would buy ~0.6% at the price of a
+~250 ms `avcodec_open2` hitch (92-142 ms per tile) at the start of every scroll.
+
+One caveat on the instrumentation: `nvidia-smi --query-gpu=utilization.encoder`
+reported 0% in every leg, including ones demonstrably encoding. Do not use that
+field on this driver; §24's "encoder block at 32%" came from a different query
+and is not reproduced here.
 
 ### Traps §24 listed, resolved
 
