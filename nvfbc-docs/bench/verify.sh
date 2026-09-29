@@ -5,8 +5,8 @@
 set -u
 
 BENCH="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(dirname "$BENCH")"
-BIN="${BIN:-$ROOT/x11vnc/src/x11vnc}"
+ROOT="$(cd "$BENCH/../.." && pwd)"
+BIN="${BIN:-$ROOT/src/x11vnc}"
 PORT="${PORT:-5901}"
 LOG="${LOG:-/tmp/x11vnc-verify.log}"
 export DISPLAY="${DISPLAY:-:1}"

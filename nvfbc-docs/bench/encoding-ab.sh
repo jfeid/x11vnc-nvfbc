@@ -26,8 +26,8 @@ set -euo pipefail
 export LC_ALL=C
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
-BIN="${BIN:-$ROOT/x11vnc/src/x11vnc}"
+ROOT="$(cd "$HERE/../.." && pwd)"
+BIN="${BIN:-$ROOT/src/x11vnc}"
 PORT="${PORT:-5906}"
 DUR="${DUR:-15}"
 GEOM="${GEOM:-960x540+64+64}"
