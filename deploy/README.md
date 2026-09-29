@@ -3,6 +3,17 @@
 Copies of what is actually running on this machine, tracked so the deployment
 is not knowledge that exists only on the filesystem.
 
+> **Use these as an example, not as a recipe.** Several values belong to this
+> machine and will be wrong on yours:
+>
+> | value | here | what it means |
+> |---|---|---|
+> | `/run/user/1000/gdm/Xauthority`, display `:1` | the logged-in user's session (uid 1000) | your user's uid and display |
+> | `/run/user/110/gdm/Xauthority`, display `:0` | the GDM login screen (uid 110, `Debian-gdm`) | your display manager's uid and auth file, if you want the login screen reachable |
+> | `-clip 2560x1440+0+0` | the left monitor (DP-4) of a 4480x1440 two-monitor screen | your monitor's geometry, or drop it to share the whole screen |
+> | `-localhost` | only reachable through an SSH tunnel | keep it unless you have a reason not to |
+> | `-rfbauth /etc/x11vnc.passwd` | password file, created with `x11vnc -storepasswd` | never commit it |
+
 | file | installed at | owner |
 |---|---|---|
 | `x11vnc-wrapper.sh` | `/usr/local/bin/x11vnc-wrapper.sh` | `root:root 0755` |
