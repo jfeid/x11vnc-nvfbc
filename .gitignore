@@ -4,6 +4,7 @@ nvfloor
 diffcheck
 pollmode
 keytarget
+nvswitch
 
 __pycache__/
 *.pyc
