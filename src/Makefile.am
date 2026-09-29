@@ -149,13 +149,9 @@ x11vnc_LDADD = \
 	@NVFBC_LIBS@ \
 	$(LD_CYGIPC)
 
-# NVFBC (NVIDIA Frame Buffer Capture) support
-if HAVE_NVFBC
-x11vnc_SOURCES += \
-	nvfbc/nvfbc_capture.c \
-	nvfbc/nvfbc_capture.h \
-	nvfbc/NvFBC.h
-
+# H.264 (RFB encoding 50). Always built: remote.c, scan.c, screen.c and
+# x11vnc.c call into it unconditionally, and it compiles its own fallbacks
+# for builds without NVFBC or libavcodec.
 x11vnc_SOURCES += \
 	h264/h264_stream.c \
 	h264/h264_stream.h \
@@ -163,5 +159,12 @@ x11vnc_SOURCES += \
 	h264/h264_encode.h
 AM_CPPFLAGS += $(FFMPEG_CFLAGS)
 x11vnc_LDADD += $(FFMPEG_LIBS)
+
+# NVFBC (NVIDIA Frame Buffer Capture) support
+if HAVE_NVFBC
+x11vnc_SOURCES += \
+	nvfbc/nvfbc_capture.c \
+	nvfbc/nvfbc_capture.h \
+	nvfbc/NvFBC.h
 AM_CPPFLAGS += -I$(srcdir)/nvfbc
 endif
