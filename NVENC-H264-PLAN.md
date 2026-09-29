@@ -1,5 +1,15 @@
 # NVENC H.264 for x11vnc-nvfbc — implementation plan
 
+> **Engineering log, kept for whoever changes this code next, including coding
+> agents.** It records every measurement, refuted hypothesis and code anchor in
+> the order they happened; later sections correct earlier ones. For a readable
+> overview, start with [`H264.md`](H264.md).
+>
+> CPU figures up to §27 were measured on an i7-3770. The machine has since
+> moved to a Ryzen 9 9900X; the same build's numbers on it are in
+> `bench/results/NOTES.md` ("AM5 platform"). Don't compare a new build against
+> the i7 figures.
+
 Status: **Phases 0-2 complete** (2026-08-21), hybrid gate wired. Phase 3 as written is
 pointless - see §14; the replacement target is x11vnc's scan/copy, not the upload.
 Written 2026-08-19.
