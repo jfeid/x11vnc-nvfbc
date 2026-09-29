@@ -1,0 +1,49 @@
+{
+  "context": {
+    "label": "cqsweep_19",
+    "timestamp": "2026-08-22T14:55:28",
+    "pid": 869169,
+    "x11vnc_cmdline": "/usr/bin/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority -forever -shared -rfbauth /etc/x11vnc.passwd -localhost -rfbport 5900 -nvfbc -nvfbc_nocursor -nvfbc_push -repeat -threads -clip 2560x1440+0+0 -h264 -h264_bitrate 20000 -h264_fps 30 -h264_enter 8 -xkb -o /var/log/x11vnc.log",
+    "x11vnc_binary": "/usr/bin/x11vnc",
+    "binary_sha256": "9923b964c7494747c01d8dc8df8cc62f4f9e47c3bd31ddac68a27a72cfd0dac5",
+    "binary_mtime": "2026-08-22 14:51:31.803818265 +0300",
+    "git_head": "c5c7ddc",
+    "git_dirty": false,
+    "gpu": "NVIDIA GeForce RTX 3060, 550.163.01",
+    "x_screen": "4480x1440",
+    "vnc_clients": 1,
+    "client_encoding": {
+      "::1": {
+        "h264": true,
+        "compress_level": 2,
+        "quality_level": 8,
+        "encoding": "ZRLE"
+      }
+    },
+    "duration_s": 30,
+    "load_enabled": true,
+    "blit": true,
+    "nvfbc_floor": {},
+    "clip": "2560x1440+0+0",
+    "clip_matches_output": null
+  },
+  "results": [
+    {
+      "scenario": "full",
+      "geometry": "2560x1440+0+0",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.03,
+      "cpu_pct": 53.2,
+      "cpu_s": 15.97,
+      "kb_per_sec": 1074.8,
+      "log_intervals": 3,
+      "log_covered_s": 30.0,
+      "new_fps": 36.96,
+      "grabs_per_sec": 39.3,
+      "grabs_per_frame": 1.1,
+      "cpu_ms_per_frame": 14.43
+    }
+  ]
+}

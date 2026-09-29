@@ -1,0 +1,66 @@
+{
+  "context": {
+    "label": "fps5-test",
+    "timestamp": "2026-08-21T23:00:25",
+    "pid": 491632,
+    "x11vnc_cmdline": "$REPO/bench/../x11vnc/src/x11vnc -rfbport 5906 -localhost -noipv6 -nopw -forever -shared -threads -repeat -clip 2560x1440+0+0 -nocursor -nvfbc -nvfbc_nocursor -nvfbc_push -h264 -h264_bitrate 20000 -h264_fps 5 -h264_enter 8 -o /tmp/x11vnc-h264-test-5906.log",
+    "x11vnc_binary": "$REPO/x11vnc/src/x11vnc",
+    "binary_sha256": "2650c5a1a5369254e82e252312b52bcd5f838cf65afa6a7aff4805cdcc34529a",
+    "binary_mtime": "2026-08-21 22:59:28.734080845 +0300",
+    "git_head": "fb042c2",
+    "git_dirty": true,
+    "gpu": "NVIDIA GeForce RTX 3060, 550.163.01",
+    "x_screen": "4480x1440",
+    "vnc_clients": 1,
+    "client_encoding": {
+      "127.0.0.1": {
+        "h264": true,
+        "compress_level": 2,
+        "quality_level": 8,
+        "encoding": "ZRLE"
+      }
+    },
+    "duration_s": 30,
+    "load_enabled": true,
+    "blit": false,
+    "nvfbc_floor": {},
+    "clip": "2560x1440+0+0",
+    "clip_matches_output": null
+  },
+  "results": [
+    {
+      "scenario": "medium",
+      "geometry": "960x540+64+64",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.03,
+      "cpu_pct": 42.8,
+      "cpu_s": 12.84,
+      "kb_per_sec": 2148.7,
+      "log_intervals": 3,
+      "log_covered_s": 30.0,
+      "new_fps": 49.83,
+      "grabs_per_sec": 56.3,
+      "grabs_per_frame": 1.1,
+      "cpu_ms_per_frame": 8.6
+    },
+    {
+      "scenario": "full",
+      "geometry": "2560x1440+0+0",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 17.6,
+      "wall_s": 30.07,
+      "cpu_pct": 91.8,
+      "cpu_s": 27.61,
+      "kb_per_sec": 2306.4,
+      "log_intervals": 3,
+      "log_covered_s": 30.3,
+      "new_fps": 39.98,
+      "grabs_per_sec": 42.0,
+      "grabs_per_frame": 1.1,
+      "cpu_ms_per_frame": 22.8
+    }
+  ]
+}

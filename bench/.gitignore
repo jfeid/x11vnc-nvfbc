@@ -1,0 +1,10 @@
+# built harness binaries (see Makefile)
+loadgen
+nvfloor
+diffcheck
+pollmode
+keytarget
+nvswitch
+
+__pycache__/
+*.pyc

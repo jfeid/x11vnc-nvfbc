@@ -1,0 +1,82 @@
+{
+  "context": {
+    "label": "blit-c6q9",
+    "timestamp": "2026-08-19T18:23:56",
+    "pid": 210467,
+    "x11vnc_cmdline": "/usr/bin/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority -forever -shared -rfbauth /etc/x11vnc.passwd -localhost -rfbport 5900 -nvfbc -nvfbc_nocursor -nvfbc_push -repeat -threads -clip 2560x1440+0+0 -xkb -o /var/log/x11vnc.log",
+    "x11vnc_binary": "/usr/bin/x11vnc",
+    "binary_sha256": "0ba5a9e23bd92460c19525c2dec6514a77f9ba3ded578633a6906fb8e82c5545",
+    "binary_mtime": "2026-08-15 18:52:41.784165678 +0300",
+    "git_head": "fcfaf8f",
+    "git_dirty": false,
+    "gpu": "NVIDIA GeForce RTX 3060, 550.163.01",
+    "x_screen": "4480x1440",
+    "vnc_clients": 1,
+    "client_encoding": {
+      "::1": {
+        "compress_level": 6,
+        "quality_level": 9,
+        "encoding": "tight"
+      }
+    },
+    "duration_s": 30,
+    "load_enabled": true,
+    "blit": true,
+    "nvfbc_floor": {
+      "screen_w": 4480.0,
+      "screen_h": 1440.0,
+      "output_geom_DP-2": "1920x1200+2560+0",
+      "output_geom_DP-4": "2560x1440+0+0",
+      "grab_nonew_us": 3.643,
+      "grab_full_us": 4813.884,
+      "grab_output_DP-2_us": 1766.516,
+      "grab_output_DP-4_us": 2732.147
+    },
+    "clip": "2560x1440+0+0",
+    "clip_matches_output": "DP-4"
+  },
+  "results": [
+    {
+      "scenario": "medium",
+      "geometry": "960x540+64+64",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.03,
+      "cpu_pct": 39.6,
+      "cpu_s": 11.9,
+      "kb_per_sec": 7563.4,
+      "log_intervals": 3,
+      "log_covered_s": 30.0,
+      "new_fps": 56.88,
+      "grabs_per_sec": 64.3,
+      "grabs_per_frame": 1.1,
+      "cpu_ms_per_frame": 6.97,
+      "est_capture_pct": 27.4,
+      "est_capture_share": 69.2,
+      "proj_capture_pct": 15.5,
+      "proj_cpu_pct": 27.8
+    },
+    {
+      "scenario": "full",
+      "geometry": "2560x1440+0+0",
+      "target_fps": 60,
+      "dirty_frac": 1.0,
+      "loadgen_achieved_fps": 60.0,
+      "wall_s": 30.02,
+      "cpu_pct": 52.5,
+      "cpu_s": 15.77,
+      "kb_per_sec": 6452.0,
+      "log_intervals": 3,
+      "log_covered_s": 30.0,
+      "new_fps": 46.3,
+      "grabs_per_sec": 48.7,
+      "grabs_per_frame": 1.1,
+      "cpu_ms_per_frame": 11.34,
+      "est_capture_pct": 22.3,
+      "est_capture_share": 42.5,
+      "proj_capture_pct": 12.6,
+      "proj_cpu_pct": 42.9
+    }
+  ]
+}
