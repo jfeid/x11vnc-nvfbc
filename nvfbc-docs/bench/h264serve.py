@@ -13,8 +13,10 @@ Rect payload, per TigerVNC common/rfb/H264Decoder.cxx:
     U32 flags      0x1 resetContext, 0x2 resetAllContexts
     U8  data[len]  Annex-B access unit
 
-One access unit per FramebufferUpdate. The stream must be encoded with
-h264_metadata=aud=insert so access units can be split on AUD NALs.
+One access unit (one whole picture) per FramebufferUpdate. Encode with
+-bsf:v h264_metadata=aud=insert and access units are cut at each AUD;
+without AUDs they are cut at the first slice of each picture. Multi-slice
+pictures stay whole either way.
 
   ./h264serve.py --file test.h264 --width 1280 --height 720 --port 5906
 """
@@ -31,7 +33,11 @@ ENCODING_H264 = 50
 
 
 def split_nals(data):
-    """Yield (start, end, nal_type) for every NAL in an Annex-B buffer."""
+    """Return (start, end, nal_type) for every NAL in an Annex-B buffer.
+
+    start includes the start code; the NAL header byte is at the first byte
+    after it.
+    """
     marks = []
     for m in re.finditer(rb"\x00\x00\x01", data):
         # a 4-byte start code is a 3-byte one with an extra leading zero
@@ -48,25 +54,54 @@ VCL_TYPES = (1, 5)
 AUD, SPS, PPS = 9, 7, 8
 
 
-def split_access_units(data):
-    """Split an Annex-B stream into access units.
+def first_slice_of_picture(data, off):
+    """True if the slice NAL at off starts a new picture (first_mb_in_slice 0).
 
-    A new access unit begins at the first NAL after the current one already
-    holds a VCL NAL. That keeps leading non-VCL NALs (SPS/PPS/SEI) attached to
-    the slice they describe, which splitting *at* VCL NALs would get backwards.
+    first_mb_in_slice is the first field of the slice header, coded ue(v); the
+    value 0 is the single bit '1', so it is the top bit of the byte after the
+    NAL header.  Emulation prevention cannot touch that byte.
+    """
+    hdr = data.index(b"\x00\x00\x01", off) + 3
+    return hdr + 1 < len(data) and data[hdr + 1] & 0x80 != 0
+
+
+def split_access_units(data):
+    """Split an Annex-B stream into access units, one per picture.
+
+    With access unit delimiters (encode with -bsf:v h264_metadata=aud=insert)
+    each AUD starts a new access unit.  Without them, a new access unit starts
+    at the first slice of each picture, together with the SPS/PPS/SEI in front
+    of it.
+
+    Cutting at every slice instead would be wrong for multi-slice pictures:
+    libx264 with -tune zerolatency, for one, splits each frame into one slice
+    per thread, and each update would then carry a fraction of a frame.
     """
     nals = split_nals(data)
     if not nals:
         raise SystemExit("h264serve.py: no NAL start codes found - is this Annex-B?")
 
-    aus, cur, cur_has_vcl = [], [], False
-    for off, end, t in nals:
-        if cur_has_vcl:
-            aus.append(cur)
-            cur, cur_has_vcl = [], False
-        cur.append((off, end, t))
-        if t in VCL_TYPES:
-            cur_has_vcl = True
+    aus, cur = [], []
+    if any(t == AUD for _, _, t in nals):
+        for nal in nals:
+            if nal[2] == AUD and cur:
+                aus.append(cur)
+                cur = []
+            cur.append(nal)
+    else:
+        cur_has_vcl = False
+        for nal in nals:
+            off, _, t = nal
+            if t in VCL_TYPES and cur_has_vcl and first_slice_of_picture(data, off):
+                # the picture's leading non-VCL NALs came after the last slice
+                i = len(cur)
+                while i > 0 and cur[i - 1][2] not in VCL_TYPES:
+                    i -= 1
+                aus.append(cur[:i])
+                cur = cur[i:]
+            cur.append(nal)
+            if t in VCL_TYPES:
+                cur_has_vcl = True
     if cur:
         aus.append(cur)
     return [[(data[a:b], t) for a, b, t in au] for au in aus]

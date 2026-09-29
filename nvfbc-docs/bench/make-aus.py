@@ -14,18 +14,10 @@ Windows decoder requires the SPS to be the first NAL of every buffer.
 
   ./make-aus.py in.h264 out.aus --width 1280 --height 720
 """
-import argparse, re, struct, sys
+import argparse, struct, sys
 
-VCL, AUD, SPS, PPS = (1, 5), 9, 7, 8
-
-
-def split_nals(data):
-    marks = []
-    for m in re.finditer(rb"\x00\x00\x01", data):
-        begin = m.start() - 1 if m.start() > 0 and data[m.start() - 1] == 0 else m.start()
-        marks.append((begin, data[m.end()] & 0x1F))
-    return [(o, marks[i + 1][0] if i + 1 < len(marks) else len(data), t)
-            for i, (o, t) in enumerate(marks)]
+# one splitter for both tools: see split_access_units() for the rules
+from h264serve import split_access_units, normalise_aus
 
 
 def main():
@@ -35,31 +27,11 @@ def main():
     ap.add_argument("--height", type=int, required=True)
     a = ap.parse_args()
 
-    data = open(a.infile, "rb").read()
-    nals = split_nals(data)
-    if not nals:
-        sys.exit("no NAL start codes - not Annex-B?")
-
-    sps = next((data[o:e] for o, e, t in nals if t == SPS), None)
-    pps = next((data[o:e] for o, e, t in nals if t == PPS), None)
-    if sps is None or pps is None:
-        sys.exit("stream carries no SPS/PPS")
-
-    aus, cur, has_vcl = [], [], False
-    for o, e, t in nals:
-        if has_vcl:
-            aus.append(cur); cur, has_vcl = [], False
-        cur.append((o, e, t))
-        if t in VCL:
-            has_vcl = True
-    if cur:
-        aus.append(cur)
+    aus, sps, pps = normalise_aus(split_access_units(open(a.infile, "rb").read()))
 
     with open(a.outfile, "wb") as f:
         f.write(b"X11VNCAU" + struct.pack(">II", a.width, a.height))
-        for au in aus:
-            body = b"".join(data[o:e] for o, e, t in au if t not in (AUD, SPS, PPS))
-            payload = sps + pps + body
+        for payload in aus:
             f.write(struct.pack(">I", len(payload)) + payload)
     print(f"{a.outfile}: {len(aus)} access units, {a.width}x{a.height}, "
           f"SPS {len(sps)}B + PPS {len(pps)}B on each")
