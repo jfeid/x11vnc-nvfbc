@@ -329,3 +329,69 @@ Two things not to read too much into:
 `avcodec_open2` is now 30-31 ms per tile against 92-142 ms before, because
 creating the CUDA context is no longer part of it - the gate-entry hitch is
 mostly gone as a side effect.
+
+
+## AM5 platform, same binary (2026-09-29)
+
+Same deployed binary as `sharedctx-prod` (`4445df61`, git `9aea6be`), same
+service cmdline, same default four-scenario `measure.py`, same real TigerVNC
+client (ZRLE c2 q8, H.264 on). Platform changed: i7-3770 / Z77 / DDR3-1333 ->
+Ryzen 9 9900X / B850 / DDR5-6000. GPU and driver unchanged (RTX 3060,
+550.163.01). Kernel moved 6.12.57 -> 6.12.107 in the meantime, so this is not a
+pure hardware A/B.
+
+| file | what it is |
+|---|---|
+| `am5-sharedctx-prod-rerun-20260929-193208.json` | **the AM5 baseline.** Four scenarios, reproduces the per-trial numbers below. |
+| `am5-sharedctx-prod-20260929-191400.json` | first run. `idle`/`small`/`medium` agree with the rerun; its `full` (8.5%, loadgen 60 fps) is an **outlier that did not reproduce** in 8 later trials - do not use it. |
+| `am5-full-threadcpu-20260929-192157.json` | `full` only, `--no-floor`, with `threadcpu.py` over the same window. 28.5%. |
+
+| scenario | i7-3770 cpu% | 9900X cpu% | i7 cpu ms/frame | 9900X cpu ms/frame |
+|---|---|---|---|---|
+| idle | 11.7 | 9.1 | 10.9 | 8.47 |
+| small | 34.3 | 12.5 | 7.1 | 2.84 |
+| medium | 33.0 | 9.2 | 6.08 | 1.57 |
+| **full** | **72.8** | **28.6** | **22.49** | **11.76** |
+
+NVFBC floor: full-screen grab 5174 -> 1384 us, DP-4 output grab 2707 -> 820 us.
+
+### `full`: where the 28.6% is
+
+`threadcpu.py` under a 2560x1440@60 load, 8 trials (19:20-19:29), all within
+28.1-29.2% total:
+
+| thread | i7-3770 (plan §27) | 9900X |
+|---|---|---|
+| `cuda-EvtHandlr` (NVENC driver poll) | ~42% | **17.5%** (83% sys, ~92,000 wakeups/s) |
+| x11vnc watch_loop | ~31% | **10.8%** |
+| total | 72.8% | 28.5% |
+
+Both halves shrank by about the same factor (2.4x / 2.9x), so the split is
+unchanged: the driver poll thread is still ~60% of the `full` cost. It wakes
+twice as often as on the i7 (92k vs 42-45k/s) at less cost per wakeup.
+
+**The GPU is the bottleneck under `full`, and the bench is what saturates it.**
+`nvidia-smi pmon`: Xorg at 80-91% SM (rendering loadgen's 3600 fills/frame),
+x11vnc at 3-4% enc, GPU 91% total. loadgen reaches 38.5 fps (i7: 32.4), NVFBC
+captures ~24 fps, the fence-paced client takes ~11.3 fps. Since the poll
+thread's cost tracks GPU wait time, `full` measures GPU contention created by
+the load generator more than anything in x11vnc. `medium` (GPU ~12-20%) is
+the better proxy for real desktop motion: H.264 engaged, 9.2%.
+
+Ruled out as the cause of the 8.5% outlier, each by a trial: the tool
+(`measure.py` and `threadcpu.py` agree), `nvfloor` running first, the display
+blanked (DPMS off), and the scenario order (the rerun repeats it exactly,
+gate entering H.264 during `medium` as before). Unexplained. The outlier had
+real content moving - 441.9 KB/s, 14 fps of H.264 sent - so the window was
+drawn; Xorg simply rendered the same load at 60 fps with headroom.
+
+Side note, kernel `WARNING` at `nvidia-drm-drv.c:1220`
+(`nv_drm_revoke_modeset_permission`): not caused by NVFBC or x11vnc. It fires
+on `close()` of any nvidia DRM fd (`drm_release -> drm_file_free`), so every
+process that opens the device logs one - Xorg, gnome-shell, logind, dconf,
+gst-plugin-scanner, gjs, and x11vnc (2 at its 19:07:10 NVFBC init, none when
+the H.264 encoders open). `nvfloor` logs 3 per run. 36-1900 per boot. It
+predates the AM5 swap and the 6.12.107 kernel: the i7 logged 400-1700 per boot,
+and the first boot with any is 2026-06-03 11:26, the reboot that enabled
+`nvidia-drm modeset=1` (driver 550.163.01 throughout). A driver-side WARN_ON
+under modeset=1; nothing to fix in the fork.
