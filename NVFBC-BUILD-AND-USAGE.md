@@ -2,7 +2,15 @@
 
 ## Overview
 
-NVFBC (NVIDIA Frame Buffer Capture) is a high-performance screen capture API that captures frames directly from the GPU framebuffer. This provides significantly faster screen capture compared to traditional X11 methods (XShmGetImage), enabling smooth VNC streaming at 50+ FPS even during video playback.
+NVFBC (NVIDIA Frame Buffer Capture) reads frames directly from the GPU instead
+of asking the X server for them (`XShmGetImage`). It also reports which parts of
+the screen changed, so x11vnc doesn't have to compare the screen itself.
+
+What it buys is frame rate, not CPU. Against x11vnc's standard capture on the
+reference machine it delivers 9-36% more frames to the client, at a higher CPU
+cost per frame (see [Performance](#performance)). How many frames a client
+actually receives depends more on the encoding and the client than on capture;
+with H.264, see [`H264.md`](H264.md).
 
 This fork of x11vnc adds NVFBC support with a patch-free method that works on consumer GeForce GPUs (not just Quadro/Tesla).
 
@@ -192,10 +200,23 @@ cd bench
 
 Do not quote fixed FPS figures: achievable frame rate depends on resolution,
 how much of the screen changes, the encoding the client negotiates, and how
-many clients are attached. On the reference machine (RTX 3060, 2560x1440
-served, one client) a 960x540 region changing at 60 Hz was sustained at 60 fps,
-while driving the full 2560x1440 at 60 Hz saturated a core and fell to ~38 fps
-- that case is limited by encoding, not capture.
+many clients are attached. The `new fps` value in the stats line is frames
+*captured*, not frames a client received, and runs higher.
+
+Frames delivered to one client on the reference machine (RTX 3060, i7-3770,
+2560x1440 served), with the load changing at 60 Hz:
+
+| changing area | stock x11vnc | with NVFBC |
+|---|---|---|
+| 320x240 | 37.3 fps | 50.9 fps |
+| 960x540 | 34.5 fps | 42.1 fps |
+| whole 2560x1440 | 24.9 fps | 27.2 fps |
+
+That was a local benchmark client using raw encoding
+(`bench/results/stock-comparison.md`), so it shows what the server can
+produce. A real viewer over a network gets less. With H.264 and the Windows
+TigerVNC viewer, the whole-screen case settles at about 12 fps, which is the
+rate that viewer can decode and display at 2560x1440 ([`H264.md`](H264.md)).
 
 ## Troubleshooting
 
