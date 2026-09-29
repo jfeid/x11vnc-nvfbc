@@ -13,14 +13,15 @@ the screen with NVIDIA's NVFBC instead of `XShmGetImage`.
 | [keyboard-issues-and-future-work.md](keyboard-issues-and-future-work.md) | why a non-English client locale breaks Shift+letter, what was tried and reverted, and the QEMU Extended Key Event fix that would solve it properly. |
 | [AUDIO-STREAMING.md](AUDIO-STREAMING.md) | streaming audio alongside VNC, which the RFB protocol does not carry. |
 
-## Related repositories
+## Layout
 
-These are separate checkouts alongside this one, not submodules:
+This folder is part of the x11vnc-nvfbc repository. The x11vnc source is at
+the repository root (`../src/`); upstream x11vnc's own documentation is in
+`../doc/` and `../README`.
 
-- `../x11vnc` - the fork itself, NVFBC work on branch `feature/nvfbc-capture`
-- `../bench` - benchmark harness and recorded measurements
+- [`bench/`](bench/) - benchmark harness and recorded measurements
 
-Performance claims here are backed by runs in `../bench/results/`; see
-`../bench/results/NOTES.md` for what each run was. Do not quote fixed frame
+Performance claims here are backed by runs in [`bench/results/`](bench/results/); see
+[`bench/results/NOTES.md`](bench/results/NOTES.md) for what each run was. Do not quote fixed frame
 rates - they depend on resolution, how much of the screen changes, the
 encoding the client negotiates, and how many clients are attached.

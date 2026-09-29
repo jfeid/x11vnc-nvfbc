@@ -17,7 +17,9 @@
 > **Paths rewritten 2026-09-29:** the server command lines embedded in the
 > JSON files originally held the absolute path of the local checkout. That
 > prefix was replaced with `$REPO/` before publishing; nothing else in the
-> records was changed.
+> records was changed. They describe the old layout of separate checkouts
+> (`$REPO/x11vnc`, `$REPO/bench`), which became the repo root and
+> `nvfbc-docs/bench/`.
 
 All on the same machine: RTX 3060, driver 550.163.01, X screen 4480x1440 across
 two outputs (DP-2 1920x1200+2560+0, DP-4 2560x1440+0+0), server run with
@@ -227,11 +229,11 @@ recommendation to try quality 7, or 6, stands; 5 does not.
 
 It also means the Tight path this server currently serves is **full-chroma**,
 which is the baseline any H.264 comparison has to be made against. See
-`docs/NVENC-H264-PLAN.md` §10.
+`nvfbc-docs/NVENC-H264-PLAN.md` §10.
 
 ## H.264 tiling: the freeze fix and its measurements (2026-08-22)
 
-Context: `docs/NVENC-H264-PLAN.md` §22-§25. The viewer "freeze" under sustained
+Context: `nvfbc-docs/NVENC-H264-PLAN.md` §22-§25. The viewer "freeze" under sustained
 motion was never a freeze - TigerVNC silently refuses to display any H.264 rect
 above ~2.36 Mpx, so the full-screen 2560x1440 rect never painted at all and what
 was on screen was the last Tight frame. Fixed by splitting the served region

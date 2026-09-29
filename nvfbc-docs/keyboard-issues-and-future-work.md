@@ -87,7 +87,7 @@ typedef struct {
 
 ### Files to modify
 
-- `x11vnc/src/keyboard.c` — Add scancode-based input path
-- `x11vnc/src/keyboard.h` — New callback or handler declaration
-- `x11vnc/src/screen.c` — Register extended key event handler
+- `src/keyboard.c` — Add scancode-based input path
+- `src/keyboard.h` — New callback or handler declaration
+- `src/screen.c` — Register extended key event handler
 - Possibly libvncserver itself or use raw message interception

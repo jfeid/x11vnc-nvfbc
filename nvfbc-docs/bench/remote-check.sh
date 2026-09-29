@@ -11,7 +11,7 @@
 #   ./remote-check.sh --set    # also flips a setting and restores it
 set -u
 BENCH="$(cd "$(dirname "$0")" && pwd)"
-CLIENT="${CLIENT:-$BENCH/../x11vnc/src/x11vnc}"
+CLIENT="${CLIENT:-$BENCH/../../src/x11vnc}"
 LOG="${LOG:-/var/log/x11vnc.log}"
 export DISPLAY="${DISPLAY:-:1}"
 export XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"

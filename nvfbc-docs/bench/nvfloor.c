@@ -5,7 +5,7 @@
  *
  * Emits a human table plus "#KV key=value" lines for measure.py.
  *
- * cc -O2 -I../x11vnc/src/nvfbc -o nvfloor nvfloor.c -ldl
+ * cc -O2 -I../../src/nvfbc -o nvfloor nvfloor.c -ldl
  */
 #include <stdio.h>
 #include <stdlib.h>

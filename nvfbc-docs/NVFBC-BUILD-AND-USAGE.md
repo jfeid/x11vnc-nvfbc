@@ -44,9 +44,8 @@ sudo apt-get install libnvidia-fbc1
 
 ### Clone the Repository
 ```bash
-git clone https://github.com/jfeid/x11vnc.git
-cd x11vnc
-git checkout feature/nvfbc-capture
+git clone https://github.com/jfeid/x11vnc-nvfbc.git
+cd x11vnc-nvfbc
 ```
 
 ### Build with NVFBC Support
@@ -192,7 +191,7 @@ sampler that records CPU and the server's own NVFBC stats, an NVFBC cost-floor
 probe, and an RFB client that verifies delivered pixels. See `bench/README.md`.
 
 ```bash
-cd bench
+cd nvfbc-docs/bench
 ./measure.py --label before      # then rebuild/reinstall/restart
 ./measure.py --label after
 ./compare.py before after

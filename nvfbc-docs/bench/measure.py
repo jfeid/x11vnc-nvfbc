@@ -392,8 +392,8 @@ def main():
         "x11vnc_binary": binary_path(pid),
         "binary_sha256": sha256(binary_path(pid)),
         "binary_mtime": sh("stat -c %%y %s 2>/dev/null" % binary_path(pid)).strip(),
-        "git_head": sh("git -C %s/../x11vnc rev-parse --short HEAD 2>/dev/null" % HERE).strip(),
-        "git_dirty": bool(sh("git -C %s/../x11vnc status --porcelain -- src 2>/dev/null" % HERE).strip()),
+        "git_head": sh("git -C %s rev-parse --short HEAD 2>/dev/null" % HERE).strip(),
+        "git_dirty": bool(sh("git -C %s status --porcelain -- :/src 2>/dev/null" % HERE).strip()),
         "gpu": sh("nvidia-smi --query-gpu=name,driver_version --format=csv,noheader").strip(),
         "x_screen": sh("DISPLAY=%s xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}'"
                        % os.environ.get("DISPLAY", ":1")).strip(),

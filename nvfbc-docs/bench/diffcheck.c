@@ -15,7 +15,7 @@
  *
  * Run with load on screen, e.g.  ./loadgen -g 1280x720+64+64 -r 60 -d 25 &
  *
- * cc -O2 -I../x11vnc/src/nvfbc -o diffcheck diffcheck.c -ldl
+ * cc -O2 -I../../src/nvfbc -o diffcheck diffcheck.c -ldl
  */
 #include <stdio.h>
 #include <stdlib.h>

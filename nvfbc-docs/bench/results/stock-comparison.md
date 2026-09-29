@@ -10,7 +10,7 @@ Measured with `ab.sh`: identical load, identical client, raw encoding,
 Reproduce the stock build:
 
 ```bash
-git -C ../x11vnc worktree add --detach /tmp/x11vnc-stock e2b726a
+git -C ../.. worktree add --detach /tmp/x11vnc-stock e2b726a
 cd /tmp/x11vnc-stock && autoreconf -fiv && ./configure && make -j$(nproc)
 ```
 

@@ -3,7 +3,7 @@
 # NVFBC.h comes from the x11vnc fork this harness measures.  Override if the
 # checkout lives elsewhere:  make NVFBC_INC=/path/to/src/nvfbc
 
-NVFBC_INC ?= ../x11vnc/src/nvfbc
+NVFBC_INC ?= ../../src/nvfbc
 CFLAGS    ?= -O2 -Wall
 
 BINS = loadgen nvfloor diffcheck pollmode keytarget nvswitch

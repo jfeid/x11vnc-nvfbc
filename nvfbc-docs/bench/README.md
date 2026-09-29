@@ -1,7 +1,8 @@
 # x11vnc-nvfbc benchmark harness
 
-Reproducible before/after measurements for the NVFBC capture path.
-Lives outside `x11vnc/` so the fork stays clean for upstream.
+Reproducible before/after measurements for the NVFBC capture path and the
+H.264 output. Run the tools from this directory; they find the x11vnc build at
+`../../src/x11vnc`.
 
 ## Build
 
@@ -10,7 +11,7 @@ make                                  # or: make NVFBC_INC=/path/to/src/nvfbc
 ```
 
 Needs `libX11` headers and `NvFBC.h` from the x11vnc fork (defaults to
-`../x11vnc/src/nvfbc`). The Python tools need no build.
+`../../src/nvfbc`). The Python tools need no build.
 
 ## The tools
 
@@ -50,12 +51,12 @@ Remote-control interface: `results/remote-control.md`.
 NVFBC both work — it only passes `-nvfbc` to binaries that support it:
 
 ```bash
-git -C ../x11vnc worktree add --detach /tmp/x11vnc-stock e2b726a
+git -C ../.. worktree add --detach /tmp/x11vnc-stock e2b726a
 cd /tmp/x11vnc-stock && autoreconf -fiv && ./configure && make -j$(nproc)
 cd - && GEOM=960x540+64+64 ./ab.sh \
     /tmp/x11vnc-stock/src/x11vnc \
     "/tmp/x11vnc-stock/src/x11vnc -noshm" \
-    ../x11vnc/src/x11vnc
+    ../../src/x11vnc
 ```
 
 ## Use
@@ -155,7 +156,7 @@ throwaway ports under the same load and the same client and reports
 proportional to the area each build marks modified:
 
 ```bash
-GEOM=2560x1440+0+0 ./ab.sh /usr/bin/x11vnc.bak-20260813 ../x11vnc/src/x11vnc
+GEOM=2560x1440+0+0 ./ab.sh /usr/bin/x11vnc.bak-20260813 ../../src/x11vnc
 ```
 
 (every positional argument is a binary-plus-flags command string; the load
@@ -206,7 +207,7 @@ the **client** machine:
 ```bash
 # server side
 ./keytarget -g 400x300+64+64 -d 300 &
-../x11vnc/src/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \
+../../src/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \
     -forever -shared -nopw -localhost -rfbport 5918 -repeat -noipv6 \
     -clip 2560x1440+0+0 -threads -nonap -nocursor
 # client side (after: ssh -L 5918:127.0.0.1:5918 x11vnc — the ssh config

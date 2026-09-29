@@ -2,7 +2,7 @@
  * nvswitch - what does it cost to switch NVFBC capture type, and can two
  * sessions coexist?
  *
- * docs/NVENC-H264-PLAN.md §11 leaves this to Phase 2/3 to settle, and the
+ * nvfbc-docs/NVENC-H264-PLAN.md §11 leaves this to Phase 2/3 to settle, and the
  * answer decides the architecture.  The hybrid needs the diff map to know when
  * the screen is moving, but NVFBC_TOCUDA_SETUP_PARAMS has no diff map at all -
  * it carries only dwVersion and eBufferFormat.  So either the capture type is

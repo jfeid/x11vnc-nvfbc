@@ -14,7 +14,7 @@
 # Each argument is a command string: first token is the binary, any remaining
 # tokens are extra server flags.
 #
-#   ./ab.sh /path/stock/x11vnc "/path/stock/x11vnc -noshm" ../x11vnc/src/x11vnc
+#   ./ab.sh /path/stock/x11vnc "/path/stock/x11vnc -noshm" ../../src/x11vnc
 #   GEOM=960x540+64+64 SECS=25 ./ab.sh ...
 set -u
 BENCH="$(cd "$(dirname "$0")" && pwd)"

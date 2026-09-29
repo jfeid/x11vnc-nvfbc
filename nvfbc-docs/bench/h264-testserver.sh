@@ -41,10 +41,10 @@
 set -euo pipefail
 
 # Resolve everything against the script's own directory: this has to work when
-# invoked as bench/h264-testserver.sh from the repo root, not just from bench/.
+# invoked as nvfbc-docs/bench/h264-testserver.sh from the repo root, not just from bench/.
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${1:-5906}"
-BIN="${BIN:-$HERE/../x11vnc/src/x11vnc}"
+BIN="${BIN:-$HERE/../../src/x11vnc}"
 : "${DISPLAY:=:1}"
 : "${XAUTHORITY:=/run/user/1000/gdm/Xauthority}"
 export DISPLAY XAUTHORITY
@@ -71,7 +71,7 @@ die() { echo "h264-testserver: $*" >&2; exit 1; }
 [ "$PORT" = "5900" ] && die "port 5900 is the production service; pick a spare port (default 5906)"
 
 [ -x "$BIN" ] || die "no x11vnc binary at $BIN
-  build it:  (cd $HERE/../x11vnc && make -j\$(nproc) -C src x11vnc)
+  build it:  (cd $HERE/../.. && make -j\$(nproc) -C src x11vnc)
   or point BIN at one:  BIN=/path/to/x11vnc $0 $PORT"
 
 if command -v ss >/dev/null 2>&1 && ss -tlnH 2>/dev/null | awk -v p=":$PORT\$" '$4 ~ p {found=1} END {exit !found}'; then

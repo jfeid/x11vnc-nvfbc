@@ -2,7 +2,7 @@
 """
 h264serve.py - serve a pre-encoded H.264 file as RFB encoding 50.
 
-Phase 0 step 2 of docs/NVENC-H264-PLAN.md: prove the open H.264 encoding wire
+Phase 0 step 2 of nvfbc-docs/NVENC-H264-PLAN.md: prove the open H.264 encoding wire
 format against a real client before entangling any of it with x11vnc. If a
 viewer shows moving video from this, the format, the flags and the client's
 decoder are all confirmed, and Phase 1 only has to worry about x11vnc.

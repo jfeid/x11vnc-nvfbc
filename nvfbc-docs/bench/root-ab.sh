@@ -8,10 +8,10 @@
 #   1. does the fix actually clear X_ShmAttach BadAccess for a root x11vnc?
 #   2. how does the now-working shm path compare against NVFBC, as root?
 #
-#   sudo bench/root-ab.sh
+#   sudo nvfbc-docs/bench/root-ab.sh
 set -u
 BENCH="$(cd "$(dirname "$0")" && pwd)"
-BIN="${BIN:-$BENCH/../x11vnc/src/x11vnc}"
+BIN="${BIN:-$BENCH/../../src/x11vnc}"
 CLIP="${CLIP:-2560x1440+0+0}"
 export DISPLAY="${DISPLAY:-:1}"
 export XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"

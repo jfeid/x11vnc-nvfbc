@@ -10,7 +10,7 @@
 #   FULLSCREEN=1 ./latency-ab.sh   # fullscreen rect, so direct capture can
 set -u
 BENCH="$(cd "$(dirname "$0")" && pwd)"
-BIN="${BIN:-$BENCH/../x11vnc/src/x11vnc}"
+BIN="${BIN:-$BENCH/../../src/x11vnc}"
 N="${N:-40}"
 CLIP="${CLIP:-2560x1440+0+0}"
 export DISPLAY="${DISPLAY:-:1}"

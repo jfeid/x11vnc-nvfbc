@@ -14,7 +14,7 @@
  *
  * Run with load on screen:  ./loadgen -g 960x540+64+64 -r 60 -d 60 &
  *
- * cc -O2 -I../x11vnc/src/nvfbc -o pollmode pollmode.c -ldl
+ * cc -O2 -I../../src/nvfbc -o pollmode pollmode.c -ldl
  */
 #include <stdio.h>
 #include <stdlib.h>

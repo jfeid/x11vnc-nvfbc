@@ -12,7 +12,7 @@ measures together:
 Run it against the same throwaway server the .ps1 uses, with keytarget up:
 
     ./keytarget -g 400x300+64+64 -d 600 &
-    ../x11vnc/src/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \\
+    ../../src/x11vnc -display :1 -auth /run/user/1000/gdm/Xauthority \\
         -forever -shared -nopw -localhost -rfbport 5918 -repeat -noipv6 \\
         -clip 2560x1440+0+0 -threads -nonap -nocursor
     ./vncprobe.py --port 5918 --rect 64,64,400,300 --trials 10

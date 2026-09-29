@@ -99,7 +99,7 @@ user can reach both.
 | `-localhost` | no direct exposure; reach it over an SSH tunnel |
 | `-threads` | one thread per client |
 | `-repeat -xkb` | keyboard behaviour; see `../keyboard-issues-and-future-work.md` |
-| *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec, which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../../bench/results/wait-defer.md` |
+| *(no `-wait`/`-defer`)* | deliberately unset. x11vnc auto-tunes them to `wait 10 / defer 10` when it measures framebuffer reads above 80 MB/sec, which measured better on both CPU and delivered frames than the `-wait 5 -defer 10` previously set here — see `../bench/results/wait-defer.md` |
 | `-nvfbc -nvfbc_nocursor -nvfbc_push` | NVIDIA capture instead of MIT-SHM — chosen for smoothness at a known CPU cost, see below |
 
 ### Why NVFBC is enabled
@@ -122,7 +122,7 @@ The efficiency gap therefore widens with change area. Measured latency is a wash
 (58.9ms shm against 54.4ms NVFBC with push), so the perceived smoothness comes
 from the higher frame rate, not from lower latency.
 
-Full numbers: `../../bench/results/stock-comparison.md`.
+Full numbers: `../bench/results/stock-comparison.md`.
 
 **To switch back to MIT-SHM**, delete the three `-nvfbc*` lines from the
 invocation. Do not instead append `-nonvfbc`: it works (later flags win) but
