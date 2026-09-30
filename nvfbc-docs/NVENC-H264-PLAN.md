@@ -1324,6 +1324,14 @@ IDR - not merely whether some decoder accepts it.
 
 ## 22. ROOT CAUSE: the client cannot display 2560x1440 H.264 at all (2026-08-22)
 
+> **Upstream (2026-09-30):** found independently and fixed in TigerVNC
+> [PR #2153](https://github.com/TigerVNC/tigervnc/pull/2153), not merged yet. The buffer is sized from the MFT's
+> placeholder output type, 1920x1080 x 2 = 4,147,200 B on Windows 11, which
+> fits every size measured below as "plays" and none of the "BLACK" ones once
+> the 16-row coded height is counted (2560x1080 is coded 2560x1088, 4,177,920
+> B as NV12). The PR's CI build (run #1724) displays a single 2560x1440 rect
+> from `bench/h264serve.py`; 1.16.2 shows the same stream black.
+
 Not a freeze. Not load. Not pacing, not fences, not capture, not the gate.
 **The viewer never paints a 2560x1440 H.264 rect, at any rate, from any server.**
 

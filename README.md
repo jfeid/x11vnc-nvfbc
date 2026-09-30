@@ -90,7 +90,8 @@ setup is in [`nvfbc-docs/deploy/`](nvfbc-docs/deploy/).
   repaints with full-quality encoding, so text you're reading is sharp.
 - **TigerVNC's Windows viewer can't show H.264 areas larger than 2048x1152.**
   It shows nothing and reports no error. The server works around this by
-  splitting the screen into bands. Reported to TigerVNC: *(link)*.
+  splitting the screen into bands. A fix is pending in TigerVNC
+  ([#2153](https://github.com/TigerVNC/tigervnc/pull/2153)); its test build displays 2560x1440 from this server.
 - **Only tested with one viewer and one machine** (TigerVNC on Windows, an
   RTX 3060). Reports from other setups are welcome, but support is best
   effort.
